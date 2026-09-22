@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "answer-book",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "quand",
+      "niveau_max",
+      "decision",
+      "portee",
+      "expire_le",
+      "remplace"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^R-[0-9]{3}$"
+      },
+      "quand": {
+        "type": "string",
+        "pattern": "^[PM][0-9]+:[A-Za-z0-9_()\/-]+$"
+      },
+      "niveau_max": {
+        "type": "string",
+        "enum": ["L1", "L2", "L3"]
+      },
+      "decision": {
+        "type": "string",
+        "enum": ["approuver", "refuser", "modifier", "reporter"]
+      },
+      "portee": {
+        "type": "string",
+        "minLength": 1
+      },
+      "expire_le": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "remplace": {
+        "type": "string",
+        "pattern": "^(-|R-[0-9]{3})$"
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": "3.0",
+  "niveaux": {
+    "L1": {
+      "nom": "information",
+      "delai_heures": 48,
+      "relances": [],
+      "canaux": ["digest"],
+      "defaut": "archiver"
+    },
+    "L2": {
+      "nom": "revue",
+      "delai_heures": 8,
+      "relances": [4],
+      "canaux": ["push", "github_ready", "commentaire_pr"],
+      "defaut": "geler"
+    },
+    "L3": {
+      "nom": "decision",
+      "delai_heures": 2,
+      "relances": [0.5, 1],
+      "canaux": ["push_prioritaire", "github_issue", "email", "journal_email"],
+      "defaut": "geler_renforce"
+    },
+    "L4": {
+      "nom": "critique",
+      "delai_heures": 1,
+      "relances": [0.25, 0.5, 0.75],
+      "canaux": ["push_prioritaire", "github_issue", "email", "journal_email"],
+      "defaut": "refus_enregistre",
+      "quarantaine": true
+    }
+  },
+  "derivation": {
+    "L1": ["M1:*", "M2:*"],
+    "L2": ["M3:desaccord-reviewer"],
+    "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*"],
+    "L4": ["P2:*", "P3:*", "P5:*"]
+  },
+  "disjoncteur": {
+    "max_l4_non_resolues": 3,
+    "fenetre_l4_heures": 12,
+    "max_blocked_total": 5,
+    "cout_24h_max_usd": 25.0,
+    "action": "pause"
+  },
+  "destinataires": {
+    "digest": "journal.digest",
+    "push": "ntfy",
+    "push_prioritaire": "ntfy-high",
+    "github_ready": "pull-request",
+    "commentaire_pr": "pull-request-comment",
+    "github_issue": "issue",
+    "email": "brevo",
+    "journal_email": "journal.email"
+  },
+  "reponses_pre_autorisees": {}
+}

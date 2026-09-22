@@ -1,0 +1,13 @@
+{
+  "name": "essai-orchestrateur",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Projet d'essai jetable du socle d'orchestration : eprouver la publication (push, PR, fusion automatique).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-reporter=tap"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

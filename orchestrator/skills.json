@@ -1,0 +1,8 @@
+{
+  "_commentaire": "Skill designe pour chaque etape d'un agent (2026-09-21). par_tache surcharge etapes pour une tache donnee ; une chaine vide desactive le skill pour cette etape. Lu par skill_pour() dans lib.sh.",
+  "etapes": {
+    "implementation": "mattpocock-skills:tdd",
+    "revue": "mattpocock-skills:code-review"
+  },
+  "par_tache": {}
+}

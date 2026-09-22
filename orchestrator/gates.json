@@ -1,0 +1,6 @@
+{
+  "_commentaire": "Controles d'essai-orchestrateur (2026-09-22). Reference : 2 tests verts sur le code de depart. Plancher de 2 tests : supprimer des tests ne doit pas rendre vert. Lu par le harnais ET par la CI (.github/workflows/gates.yml) : une seule source.",
+  "gates": {
+    "test": "out=$(npm run test --silent 2>&1); printf '%s\\n' \"$out\" | grep -E '^# (tests|pass|fail) '; p=$(printf '%s\\n' \"$out\" | sed -n 's/^# pass //p'); f=$(printf '%s\\n' \"$out\" | sed -n 's/^# fail //p'); [ \"${f:-1}\" = 0 ] && [ \"${p:-0}\" -ge 2 ]"
+  }
+}

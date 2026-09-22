@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Interdit tout push depuis une branche d'agent, quel que soit l'appelant.
+set -Eeuo pipefail
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Branche source de type agent/*
+  if [[ "$local_ref" == refs/heads/agent/* ]]; then
+    echo "" >&2
+    echo "[pre-push] REFUSÉ : push depuis '$local_ref'." >&2
+    echo "[pre-push] Les branches agent/* sont locales par conception (Phase 1)." >&2
+    echo "[pre-push] L'intégration se fait via pull request depuis integration/." >&2
+    echo "" >&2
+    exit 1
+  fi
+
+  # Push forcé vers n'importe quelle branche
+  if [[ "$remote_ref" == refs/heads/* && "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      echo "[pre-push] REFUSÉ : push non fast-forward vers '$remote_ref'." >&2
+      exit 1
+    fi
+  fi
+done
+
+exit 0

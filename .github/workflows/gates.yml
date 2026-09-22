@@ -1,0 +1,93 @@
+name: Gates de tâche
+
+# Adapté du modèle du socle (orchestrateur-claude-code/.github/workflows/gates.yml),
+# 2026-09-22 : le modèle lançait npm run lint/typecheck/test/build en dur, sans lire
+# orchestrator/gates.json — la CI requise et le harnais ne vérifiaient pas la même
+# chose. Ici les contrôles viennent de gates.json, lu sur la BASE de la PR : une
+# branche d'agent ne peut pas assouplir ses propres contrôles (leçon de l'essai 4).
+# Les quatre étapes de garde-fous suivantes sont reprises du modèle sans changement.
+
+on:
+  pull_request:
+    branches: [integration]
+  workflow_dispatch:
+
+concurrency:
+  group: gates-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Installation Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Contrôles de gates.json (lu sur la base)
+        run: |
+          set -Eeuo pipefail
+          BASE="origin/${{ github.base_ref || 'integration' }}"
+          GATES="$RUNNER_TEMP/gates.json"
+          git show "$BASE:orchestrator/gates.json" >"$GATES"
+          rc=0
+          for nom in $(jq -r '.gates | keys[]' "$GATES"); do
+            cmd="$(jq -r --arg k "$nom" '.gates[$k]' "$GATES")"
+            echo "::group::$nom"
+            if bash -c "$cmd"; then echo "$nom : vert"; else echo "::error::$nom : rouge"; rc=1; fi
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+      - name: Périmètre du diff
+        run: |
+          set -Eeuo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          FILES=$(git diff --name-only "$BASE"...HEAD | wc -l | tr -d ' ')
+          LINES=$(git diff --numstat "$BASE"...HEAD | awk '{a += $1 + $2} END {print a + 0}')
+          echo "diff : ${FILES} fichiers / ${LINES} lignes"
+          if (( FILES > 25 || LINES > 800 )); then
+            echo "::error::Plafond de diff dépassé (${FILES}f/${LINES}l) — la PR ne doit pas être auto-mergée"
+            exit 1
+          fi
+
+      - name: Interdiction de test neutralisé
+        run: |
+          set -Eeuo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          if git diff "$BASE"...HEAD -U0 | grep -E '^\+' \
+             | grep -EqE '\.(skip|only)\(|@Ignore|# *type: *ignore|@ts-ignore'; then
+            echo "::error::Test ou vérification neutralisé détecté dans le diff"
+            exit 1
+          fi
+
+      - name: Interdiction de secret
+        run: |
+          set -Eeuo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          if git diff "$BASE"...HEAD -U0 | grep -E '^\+' \
+             | grep -EqE 'AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{20,}'; then
+            echo "::error::Motif de secret détecté dans le diff"
+            exit 1
+          fi
+
+      - name: Modification des garde-fous
+        run: |
+          set -Eeuo pipefail
+          BASE="origin/${{ github.base_ref }}"
+          if git diff --name-only "$BASE"...HEAD | grep -EqE '^\.claude/|^\.githooks/|^docs/adr/'; then
+            echo "::error::Un garde-fou ou un ADR est modifié — revue humaine obligatoire"
+            exit 1
+          fi

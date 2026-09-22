@@ -1,0 +1,10 @@
+# Les 31 scripts du socle sont interpretes par bash : un CRLF les casse
+# (`\r: command not found`). Windows a core.autocrlf=true, qui convertirait tout
+# a la sortie du prochain clone. Ce verrou est pose des l'import, quand il ne coute
+# rien -- pas apres coup, ou il imposerait une renormalisation de tout le depot.
+* text=auto eol=lf
+
+# Binaires : pas de conversion, pas de diff textuel.
+*.pdf   -text -diff
+*.png   -text -diff
+*.zip   -text -diff

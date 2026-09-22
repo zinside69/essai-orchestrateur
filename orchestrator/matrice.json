@@ -1,0 +1,105 @@
+{
+  "schema_version": "2.0",
+  "volumes": {
+    "auto_merge_max_fichiers": 5,
+    "auto_merge_max_lignes": 150,
+    "draft_max_fichiers": 15,
+    "draft_max_lignes": 400,
+    "plafond_fichiers": 25,
+    "plafond_lignes": 800
+  },
+  "seuils_revue": {
+    "confiance_min_accord": 0.75
+  },
+  "revue": {
+    "modele_auteur": "sonnet",
+    "modele_reviewer": "opus",
+    "max_turns": 12,
+    "permission_mode": "plan"
+  },
+  "chemins_automerge": [
+    "src/**",
+    "tests/**",
+    "docs/**"
+  ],
+  "chemins_draft": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "tests/**",
+    "examples/**",
+    "README.md"
+  ],
+  "chemins_absolus": [
+    "**/.env",
+    "**/.env.*",
+    "**/*credentials*",
+    "**/*service-account*",
+    "docs/adr/**",
+    ".claude/**",
+    ".githooks/**"
+  ],
+  "motifs_secret": [
+    "AKIA[0-9A-Z]{16}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    "ghp_[A-Za-z0-9]{36}",
+    "sk-[A-Za-z0-9]{20,}",
+    "xox[baprs]-[A-Za-z0-9-]{10,}",
+    "(?i)(password|passwd|secret|api[_-]?key|token)\\s*[:=]\\s*[\"'][^\"']{8,}[\"']"
+  ],
+  "motifs_nature_mutative": [
+    "^\\+.*\\.skip\\(",
+    "^\\+.*\\.only\\(",
+    "^\\+.*@Ignore",
+    "^\\+.*@ts-ignore",
+    "^\\+.*eslint-disable",
+    "^\\+.*# *type: *ignore",
+    "^\\+.*xfail"
+  ],
+  "fichiers_dependances": [
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "requirements.txt",
+    "poetry.lock",
+    "uv.lock",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "persistance": {
+    "max_echecs_gate_consecutifs": 2
+  },
+  "evidence": {
+    "obligatoire": true,
+    "defaut": "code",
+    "types": {
+      "code": ["tests-hashes"],
+      "ui": ["capture-avant", "capture-apres"],
+      "migration": ["diff-schema"]
+    }
+  },
+  "machine_etats": {
+    "etats": ["PENDING", "READY", "RUNNING", "VERIFIED", "REVIEWED", "PUBLISHED", "DONE", "RED", "FAILED", "PARKED", "BLOCKED", "ESCALATED"],
+    "initial": "PENDING",
+    "terminaux": ["DONE", "BLOCKED"],
+    "transitions": {
+      "PENDING": ["READY"],
+      "READY": ["RUNNING", "PARKED"],
+      "RUNNING": ["VERIFIED", "RED", "FAILED", "PARKED"],
+      "VERIFIED": ["REVIEWED", "PARKED"],
+      "REVIEWED": ["PUBLISHED", "PARKED", "BLOCKED"],
+      "PUBLISHED": ["DONE", "ESCALATED", "PARKED"],
+      "RED": ["RUNNING", "PARKED"],
+      "FAILED": ["RUNNING", "PARKED", "BLOCKED"],
+      "PARKED": ["READY", "RUNNING", "FAILED", "BLOCKED", "ESCALATED"],
+      "ESCALATED": ["PARKED", "BLOCKED"],
+      "BLOCKED": ["READY", "RUNNING", "FAILED"],
+      "DONE": []
+    }
+  },
+  "regles_arret": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"],
+  "regles_progression": ["M1", "M2", "M3"],
+  "defaut": "PARK"
+}
