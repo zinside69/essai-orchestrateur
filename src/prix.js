@@ -14,3 +14,22 @@ export function montantTTC(htCentimes, tauxPourcent) {
   }
   return Math.round((htCentimes * (100 + tauxPourcent)) / 100);
 }
+
+/**
+ * Formate un montant en centimes en euros lisibles (espace pour les milliers,
+ * virgule pour les decimales, symbole € final).
+ * @param {number} centimes montant entier de centimes (peut etre negatif)
+ * @returns {string} montant formate, ex. "1 234,50 €"
+ * @throws {TypeError} si centimes n'est pas un entier
+ */
+export function formaterEuros(centimes) {
+  if (!Number.isInteger(centimes)) {
+    throw new TypeError('centimes doit etre un entier');
+  }
+  const signe = centimes < 0 ? '-' : '';
+  const absCentimes = Math.abs(centimes);
+  const euros = Math.floor(absCentimes / 100);
+  const eurosStr = String(euros).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const centsStr = String(absCentimes % 100).padStart(2, '0');
+  return `${signe}${eurosStr},${centsStr} €`;
+}
