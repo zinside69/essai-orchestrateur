@@ -397,6 +397,12 @@ A02="$(alerte_intervalle "$M02" 0.00 0.80)"
 A09="$(awk -v v="$M09" 'BEGIN{ if (v < 0.90) print "ROUGE"; else if (v < 1.0) print "AMBRE"; else print "VERT" }')"
 A13="$(awk -v v="$M13" 'BEGIN{ if (v >= 5) print "ROUGE"; else if (v >= 3) print "AMBRE"; else print "VERT" }')"
 
+# (2026-09-22, defaut 7) Cout et tokens des agents : agreges par couts.sh depuis
+# journal/couts.jsonl (une ligne par appel a claude). Absent ou en echec : null,
+# le reste du tableau de bord ne doit pas en dependre. Test N6.
+COUTS_JSON="$("$ROOT/orchestrator/couts.sh" --jours "$JOURS" --format json 2>/dev/null)" || COUTS_JSON="null"
+[[ -n "$COUTS_JSON" ]] || COUTS_JSON="null"
+
 case "$FORMAT" in
   tsv)
     printf 'metrique\tindicateur\tvaleur\talerte\n'
@@ -425,9 +431,19 @@ case "$FORMAT" in
     printf 'M17\tnotifications_echouees\t%s\t%s\n' "$M17_ECHECS" "$(awk -v v="$M17_ECHECS" 'BEGIN{print (v>0)?"AMBRE":"VERT"}')"
     printf 'M17\tescalades_muettes\t%s\t%s\n' "$M17_MUETTES" "$A17"
     printf 'META\tescalades_ouvertes\t%s\t-\n' "$OUVERTES"
+    jq -r 'if . == null then empty else .totaux |
+      "COUTS\tcout_total_usd\t\(.cout_usd)\t\(.alerte_jour)",
+      "COUTS\tcout_sans_resultat_usd\t\(.cout_sans_resultat_usd)\t-",
+      "COUTS\tpart_cache_lu\t\(.part_cache_lu)\t-",
+      "COUTS\tappels\t\(.appels)\t-" end' <<<"$COUTS_JSON"
     ;;
   json)
+    # (2026-09-22, defaut 7) Ajout de la cle « couts » (--argjson couts). Ligne
+    # d'origine du filtre citee ici : un commentaire ne peut pas s'inserer entre
+    # les lignes continuees (\) de la commande ci-dessous.
+    # AVANT :       '{M01:$M01,M02:$M02,M03_moyenne:$M03_moyenne,M03_ecart_type:$M03_ecart_type,M08:$M08,M09:$M09,M10:$M10,M11:$M11,M12:$M12,M13:$M13,M14:{contribution_positive:$M14_pos,contribution_negative:$M14_neg,en_quarantaine:($M14_quar|if .=="" then [] else split(",") end)},M16:{docs_evalues:$M16_eval,contribution_neutre:$M16_neu,contribution_negative:$M16_neg,en_quarantaine:($M16_quar|if .=="" then [] else split(",") end)},M17:{notifications_echouees:$M17_echecs,escalades_muettes:$M17_muettes},alertes:{M17:$a17,M01:$a01,M02:$a02,M09:$a09,M13:$a13}}'
     jq -n \
+      --argjson couts "$COUTS_JSON" \
       --argjson M01 "$M01" \
       --argjson M02 "$M02" \
       --argjson M03_moyenne "$M03M" \
@@ -449,7 +465,7 @@ case "$FORMAT" in
       --argjson M17_echecs "${M17_ECHECS:-0}" \
       --argjson M17_muettes "${M17_MUETTES:-0}" \
       --arg a17 "$A17" \
-      '{M01:$M01,M02:$M02,M03_moyenne:$M03_moyenne,M03_ecart_type:$M03_ecart_type,M08:$M08,M09:$M09,M10:$M10,M11:$M11,M12:$M12,M13:$M13,M14:{contribution_positive:$M14_pos,contribution_negative:$M14_neg,en_quarantaine:($M14_quar|if .=="" then [] else split(",") end)},M16:{docs_evalues:$M16_eval,contribution_neutre:$M16_neu,contribution_negative:$M16_neg,en_quarantaine:($M16_quar|if .=="" then [] else split(",") end)},M17:{notifications_echouees:$M17_echecs,escalades_muettes:$M17_muettes},alertes:{M17:$a17,M01:$a01,M02:$a02,M09:$a09,M13:$a13}}'
+      '{M01:$M01,M02:$M02,M03_moyenne:$M03_moyenne,M03_ecart_type:$M03_ecart_type,M08:$M08,M09:$M09,M10:$M10,M11:$M11,M12:$M12,M13:$M13,M14:{contribution_positive:$M14_pos,contribution_negative:$M14_neg,en_quarantaine:($M14_quar|if .=="" then [] else split(",") end)},M16:{docs_evalues:$M16_eval,contribution_neutre:$M16_neu,contribution_negative:$M16_neg,en_quarantaine:($M16_quar|if .=="" then [] else split(",") end)},M17:{notifications_echouees:$M17_echecs,escalades_muettes:$M17_muettes},alertes:{M17:$a17,M01:$a01,M02:$a02,M09:$a09,M13:$a13},couts:$couts}'
     ;;
   markdown)
     echo "# Tableau de bord — ${JOURS} derniers jours"
@@ -484,6 +500,9 @@ case "$FORMAT" in
     echo "| L2 | ${L2N} |"
     echo "| L3 | ${L3N} |"
     echo "| L4 | ${L4N} |"
+    echo
+    "$ROOT/orchestrator/couts.sh" --jours "$JOURS" --format markdown 2>/dev/null \
+      || echo "## Couts et tokens — indisponibles (couts.sh en echec)"
     ;;
   *)
     die "format inconnu : $FORMAT"

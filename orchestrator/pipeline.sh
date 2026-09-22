@@ -63,13 +63,41 @@ if (( DRY_RUN == 1 )); then
 fi
 
 # 1. Execution de l'auteur (Phase 1)
-if ! "$D/run-task.sh" "$TASK_ID" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1; then
-  rcg=$?
-  if (( rcg == 10 )); then
-    transition RED
-  else
-    transition FAILED
-  fi
+# AVANT : if ! "$D/run-task.sh" "$TASK_ID" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1; then
+# AVANT :   rcg=$?
+# AVANT :   if (( rcg == 10 )); then
+# AVANT :     transition RED
+# AVANT :   else
+# AVANT :     transition FAILED
+# AVANT :   fi
+# AVANT :   exit "$rcg"
+# AVANT : fi
+#   (2026-09-22, essai de publication, defauts 10 et 2) Dans « if ! cmd », $?
+#   est celui de la negation : rcg valait TOUJOURS 0. Des controles rouges
+#   devenaient FAILED au lieu de RED et le pipeline sortait en 0. Et une vraie
+#   panne passait FAILED sans prevenir personne (meme esprit que le defaut 30).
+#   Trois issues distinctes desormais. Tests Y3 et Y4.
+set +e
+"$D/run-task.sh" "$TASK_ID" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1
+rcg=$?
+set -e
+if (( rcg != 0 )); then
+  case "$rcg" in
+    10)
+      # Controles rouges : le cas normal d'un nouvel essai (RED -> RUNNING).
+      transition RED ;;
+    20)
+      # gate.sh demande un humain (risque, perimetre) : ses raisons font l'escalade.
+      transition PARKED
+      "$D/escalade.sh" "$TASK_ID" "$GATE_V" || true ;;
+    *)
+      # Panne : worktree, preparation, agent. Quelqu'un doit le savoir. P10 n'est
+      # derive nulle part dans escalade.json : L3 par defaut (ntfy prioritaire, e-mail).
+      transition FAILED
+      ESC_RUN="$STATE_DIR/$TASK_ID.escalade-run-task.json"
+      jq -nc --arg rc "$rcg" '{raisons: ["P10:run-task-echoue(rc=" + $rc + ")"]}' >"$ESC_RUN"
+      "$D/escalade.sh" "$TASK_ID" "$ESC_RUN" || true ;;
+  esac
   exit "$rcg"
 fi
 

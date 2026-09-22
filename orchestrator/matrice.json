@@ -11,6 +11,13 @@
   "seuils_revue": {
     "confiance_min_accord": 0.75
   },
+  "couts": {
+    "_commentaire": "2026-09-22 (defaut 7) : seuils d'alerte du cout des agents, lus par couts.sh. Alerte seulement : aucun agent n'est arrete (decision de l'operateur). Cout = tarif public calcule par Claude Code.",
+    "tache_ambre_usd": 1.0,
+    "tache_rouge_usd": 3.0,
+    "jour_ambre_usd": 10.0,
+    "jour_rouge_usd": 25.0
+  },
   "revue": {
     "modele_auteur": "sonnet",
     "modele_reviewer": "opus",

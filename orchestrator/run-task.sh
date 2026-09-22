@@ -43,14 +43,33 @@ log "Snapshot posé : $TAG -> rollback = git reset --hard $TAG"
 if git worktree list --porcelain | grep -q "$WT"; then
   git worktree remove "$WT" --force || true
 fi
-git worktree add -b "$BRANCH" "$WT" "$INTEGRATION_BRANCH"
+# AVANT : git worktree add -b "$BRANCH" "$WT" "$INTEGRATION_BRANCH"
+#   (2026-09-22, essai de publication, defaut 4) « -b » cree la branche AVANT
+#   d'echouer sur le dossier : la branche restait, et toute relance FAILED ->
+#   RUNNING echouait ensuite (« a branch named ... already exists »). Une
+#   branche existante est reprise telle quelle, sans rien effacer : le travail
+#   d'un essai precedent y reste, comme la session reprise par --resume. Test P5.
+if git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+  git worktree add "$WT" "$BRANCH"
+  log "Branche $BRANCH existante reprise (essai precedent)"
+else
+  git worktree add -b "$BRANCH" "$WT" "$INTEGRATION_BRANCH"
+fi
 log "Worktree créé : $WT (branche $BRANCH)"
 preparer_worktree "$WT"
 
 # --- 3. Neutralisation push (couche 4) -----------------------------------
 cd "$WT"
 if git remote get-url origin >/dev/null 2>&1; then
-  git config remote.origin.pushurl "no-push://interdit"
+  # AVANT : git config remote.origin.pushurl "no-push://interdit"
+  #   (2026-09-22, essai de publication GitHub, defaut 5) Un worktree partage le
+  #   .git/config du depot principal : cette ligne neutralisait le push du DEPOT
+  #   ENTIER, harnais compris — publisher.sh ne pouvait plus jamais pousser.
+  #   Invisible tant que le projet orchestre n'avait pas de remote. La
+  #   neutralisation va desormais dans la configuration PROPRE au worktree
+  #   (config.worktree), que le depot principal ne lit pas. Test Y2.
+  git config extensions.worktreeConfig true
+  git config --worktree remote.origin.pushurl "no-push://interdit"
   log "pushurl neutralisée dans le worktree"
 fi
 
@@ -103,6 +122,9 @@ claude -p "$PROMPT" "${REPRISE[@]}" \
   >"$LOG" 2>&1
 CLAUDE_RC=$?
 set -e
+# (2026-09-22, defaut 7) Cout, tokens, tours et duree de l'auteur au journal des
+# couts, AVANT la porte : une tache rouge ou en panne a quand meme depense.
+journaliser_cout "$TASK_ID" auteur "$LOG"
 
 # --- 6. Capture de session et coût ---------------------------------------
 SESSION_ID="$(jq -r 'select(.type=="system" and .subtype=="init") | .session_id' "$LOG" 2>/dev/null | head -1 || true)"

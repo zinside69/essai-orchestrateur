@@ -113,6 +113,26 @@ count_running() {
   printf '%s\n' "$n"
 }
 
+# (2026-09-22, essai de publication, defaut 9) reconcile.sh est le seul a passer
+# une tache PUBLISHED a DONE quand sa PR est fusionnee — mais personne ne
+# l'appelait : aucune dependance ne se debloquait jamais. Lance a chaque passe,
+# depuis la racine (gh deduit le depot du dossier courant). Sans gh ni remote,
+# rien a verifier : on le dit, et le planificateur continue. Test Y5.
+reconcilier() {
+  if ! git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+    log "reconcile : pas de remote origin — aucune PR a verifier"
+    return 0
+  fi
+  if (( DRY_RUN == 0 )) && ! command -v gh >/dev/null 2>&1; then
+    log "reconcile : gh absent — les PR fusionnees ne passeront pas DONE"
+    return 0
+  fi
+  local opt=()
+  (( DRY_RUN == 1 )) && opt=(--dry-run)
+  ( cd "$ROOT" && "$ROOT/orchestrator/reconcile.sh" "${opt[@]}" ) >>"$LOG_DIR/reconcile.log" 2>&1 \
+    || log "reconcile : echec (voir $LOG_DIR/reconcile.log)"
+}
+
 run_once() {
   local G="$ETAT_DIR/graphe.json" MANIFESTE_SHA GRAPHE_SHA EN_COURS PLACES
 
@@ -120,6 +140,14 @@ run_once() {
     log "DISJONCTEUR ACTIF — planificateur en PAUSE. Aucune nouvelle tache lancee."
     return 0
   fi
+
+  reconcilier
+  # (2026-09-22, defaut 9) Le graphe lit l'etat des taches a la compilation : il
+  # n'etait recompile que si todo.md changeait, si bien qu'une tache passee DONE
+  # ne liberait pas sa dependante — et qu'une tache FAILED restait « eligible »
+  # sur un graphe perime (T-001 relancee seule a l'essai 2). Recompile a chaque
+  # passe ; le controle d'empreinte ci-dessous reste, desormais toujours d'accord.
+  "$ROOT/orchestrator/graphe.sh" "$ROOT/todo.md" >/dev/null || die "recompilation impossible"
 
   MANIFESTE_SHA="$(sha256sum "$ROOT/todo.md" | awk '{print $1}')"
   GRAPHE_SHA="$(jq -r '.manifeste_sha256' "$G" 2>/dev/null || echo absent)"

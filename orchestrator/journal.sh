@@ -37,8 +37,24 @@ if [[ -f "$STATE_DIR/$TASK_ID.verdict.json" ]]; then
   PREUVE_JSON="$(jq -c '.preuve // null' "$STATE_DIR/$TASK_ID.verdict.json")"
 fi
 
+# --- Cout reel de la tache (2026-09-22, defaut 7) ----------------------------
+# Somme de journal/couts.jsonl pour la tache, relances comprises. Les cles
+# auteur/reviewer/total sont celles que lit deja le tableau de bord (M02).
+COUTS_J="$ORCH_DIR/journal/couts.jsonl"
+COUT_JSON='{"auteur":0,"reviewer":0,"total":0}'
+if [[ -f "$COUTS_J" ]]; then
+  COUT_JSON="$(jq -cs --arg t "$TASK_ID" '
+    [.[] | select(.tache == $t)]
+    | {auteur: ([.[] | select(.role == "auteur") | .cout_usd] | add // 0),
+       reviewer: ([.[] | select(.role == "relecteur") | .cout_usd] | add // 0)}
+    | .total = (.auteur + .reviewer)' "$COUTS_J")"
+fi
+
 # --- Contenu de la ligne, hors hash ---------------------------------------
 CHEMINS_JSON="$(git -C "$ROOT" diff --name-only "${INTEGRATION_BRANCH}...agent/$TASK_ID" | jq -R . | jq -cs .)"
+# (2026-09-22, defaut 7) Ligne d'origine citee ici : un commentaire ne peut pas
+# s'inserer entre les lignes continuees (\) de la commande ci-dessous.
+# AVANT :   --argjson cout '{"auteur":0,"reviewer":0,"total":0}' \
 CORPS="$(jq -c -n \
   --arg id "$ID" \
   --arg ts "$(date -u +%FT%TZ)" \
@@ -51,7 +67,7 @@ CORPS="$(jq -c -n \
   --arg sha_h "$SHA_HEAD" \
   --arg prev "$PREV" \
   --argjson chemins "$CHEMINS_JSON" \
-  --argjson cout '{"auteur":0,"reviewer":0,"total":0}' \
+  --argjson cout "$COUT_JSON" \
   --argjson preuve "$PREUVE_JSON" \
   '{
      schema_version: "2.0",

@@ -108,6 +108,9 @@ claude -p "$PROMPT" \
   >"$STATE.reviewer.json" 2>"$STATE.reviewer.err"
 RC=$?
 set -e
+# (2026-09-22, defaut 7) Cout du relecteur au journal des couts, meme si sa
+# sortie est ensuite refusee (P4) : la depense a eu lieu.
+journaliser_cout "$TASK_ID" relecteur "$STATE.reviewer.json"
 
 [[ $RC -eq 0 ]] || isolation_invalide "reviewer en échec (code $RC)"
 

@@ -287,7 +287,14 @@ Expiration : $(heure_humaine "$expiration")
     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
       relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}' >>"$JOURNAL_ESC_T"
 
-  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
+  # AVANT : if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
+  #   (2026-09-22, essai de publication GitHub, defaut 8) Toute escalade ouverte
+  #   mettait la tache en PARKED — y compris L1, simple information qui suit un
+  #   AUTO_MERGE reussi (defaut « archiver »). Une tache publiee finissait donc
+  #   PARKED au lieu de PUBLISHED : reconcile.sh ne la passait jamais DONE et ses
+  #   dependantes ne partaient jamais. L1 n'attend aucune reponse : elle ne
+  #   suspend rien. Test Y2.
+  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 && "$niveau" != "L1" ]]; then
     python3 - "$ETAT_DIR/taches/$TASK_ID.env" <<'PY'
 import sys
 p=sys.argv[1]

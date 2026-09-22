@@ -21,7 +21,12 @@ STATE_DIR="$ORCH_DIR/state"
 INTEGRATION_BRANCH="${INTEGRATION_BRANCH:-integration}"
 # shellcheck disable=SC2034
 AGENT_BRANCH_PREFIX="agent"
-WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt}"
+# AVANT : WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt}"
+#   (2026-09-22, essai de publication, defaut 1) Deux projets ranges dans le meme
+#   dossier se disputaient wt/T-001 — tout projet a une T-001 : le projet d'essai
+#   a bute sur le worktree du bac a sable iziGSM. Un sous-dossier par projet.
+#   Les worktrees deja crees a l'ancien endroit n'y sont pas deplaces. Test P4.
+WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt/$(basename "$ROOT")}"
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -130,4 +135,40 @@ transition_etat() {
     '{ts_utc:$ts,tache:$t,de:$de,vers:$vers,appelant:$a,mode:$m}' \
     >>"$ORCH_DIR/journal/transitions.jsonl"
   return 0
+}
+
+# journaliser_cout <T-NNN> <auteur|relecteur> <sortie de claude>
+# (2026-09-22, essai de publication, defaut 7) Une ligne par appel a claude dans
+# journal/couts.jsonl, ecrite juste apres l'appel, que la suite reussisse ou non :
+# une tache ratee avant toute decision a quand meme depense. Lit la derniere ligne
+# « result » (stream-json de l'auteur ou json du relecteur) ; les lignes qui ne
+# sont pas du JSON (stderr melange au flux) sont ignorees. Sans ligne result
+# (agent coupe) : « mesure absente », cout 0 — un trou visible, pas un oubli.
+# Le cout est celui calcule par Claude Code (base « list » = tarif public, ce
+# n'est pas ce qui est facture sous abonnement). Tests N1 a N3.
+journaliser_cout() {
+  local tache="$1" role="$2" src="$3" ligne=""
+  mkdir -p "$ORCH_DIR/journal"
+  if [[ -f "$src" ]]; then
+    ligne="$(jq -cRn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" '
+      ([inputs | fromjson? | objects | select(.type == "result")] | last) as $res
+      | if $res == null then
+          {ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}
+        else
+          {ts:$ts, tache:$t, role:$r, mesure:"ok",
+           cout_usd: ($res.total_cost_usd // 0),
+           tours: ($res.num_turns // 0),
+           duree_ms: ($res.duration_ms // 0),
+           tokens: {entree: ($res.usage.input_tokens // 0),
+                    cache_lu: ($res.usage.cache_read_input_tokens // 0),
+                    cache_ecrit: ($res.usage.cache_creation_input_tokens // 0),
+                    sortie: ($res.usage.output_tokens // 0),
+                    reflexion: ($res.usage.output_tokens_details.thinking_tokens // 0)},
+           modeles: (($res.modelUsage // {}) | keys),
+           base: ([($res.modelUsage // {})[] | .costBasis? // empty] | unique | join(","))}
+        end' "$src" 2>/dev/null)" || ligne=""
+  fi
+  [[ -n "$ligne" ]] || ligne="$(jq -cn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" \
+    '{ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}')"
+  printf '%s\n' "$ligne" >>"$ORCH_DIR/journal/couts.jsonl"
 }
