@@ -1,7 +1,7 @@
 // Tests de src/prix.js — lancés par `npm run test` (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { montantTTC, formaterEuros } from '../src/prix.js';
+import { montantTTC, formaterEuros, recapitulatif } from '../src/prix.js';
 
 test('montantTTC applique le taux et arrondit au centime', () => {
   assert.equal(montantTTC(1000, 20), 1200);
@@ -26,4 +26,19 @@ test('formaterEuros gere les montants negatifs', () => {
 
 test('formaterEuros refuse un montant non entier', () => {
   assert.throws(() => formaterEuros(10.5), TypeError);
+});
+
+test('recapitulatif formate le montant hors taxes', () => {
+  const { ht } = recapitulatif(1000, 20);
+  assert.equal(ht, '10,00 €');
+});
+
+test('recapitulatif formate le montant ttc', () => {
+  const { ttc } = recapitulatif(1000, 20);
+  assert.equal(ttc, '12,00 €');
+});
+
+test('recapitulatif formate le montant de tva', () => {
+  const { tva } = recapitulatif(1000, 20);
+  assert.equal(tva, '2,00 €');
 });
