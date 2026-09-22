@@ -172,3 +172,18 @@ journaliser_cout() {
     '{ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}')"
   printf '%s\n' "$ligne" >>"$ORCH_DIR/journal/couts.jsonl"
 }
+
+# actions_ntfy <T-NNN> <jeton> <sujet de reponse> <reponse>...
+# (2026-09-22, reponse depuis le telephone) En-tete « Actions » de ntfy : un
+# bouton par reponse. Appuyer publie « T-NNN <reponse> <jeton> » sur le sujet de
+# REPONSE, que lit ecouteur.sh. Pas de virgule ni de point-virgule dans le
+# corps : ce sont les separateurs de l'en-tete. Test K7.
+actions_ntfy() {
+  local tache="$1" jeton="$2" sujet="$3" r sortie="" sep=""
+  shift 3
+  for r in "$@"; do
+    sortie+="${sep}http, ${r^}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${r} ${jeton}, clear=true"
+    sep="; "
+  done
+  printf '%s' "$sortie"
+}

@@ -201,7 +201,12 @@ notifier() {
       push|push_prioritaire)
         prio="default"
         [[ "$c" == "push_prioritaire" ]] && prio="high"
-        curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" \
+        # (2026-09-22) Boutons de reponse (ACTIONS_NTFY, pose par ouvrir_escalade)
+        # quand il y en a. Ligne d'origine, avant l'en-tete « Actions » :
+        # AVANT :         curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" \
+        local boutons=()
+        [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=(-H "Actions: $ACTIONS_NTFY")
+        curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" "${boutons[@]}" \
           -d "$message" "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" >/dev/null 2>&1 || rc=$? ;;
       github_issue)
         gh issue create --title "[$niveau] $tache — decision requise" \
@@ -289,12 +294,44 @@ Expiration : $(heure_humaine "$expiration")
     message="$message
 Conclusion de l'agent : $detail"
   fi
+  # (2026-09-22, demande de l'operateur : « quelle action dois-je faire ? ») La
+  # ligne a copier, avec le numero de la tache et la reponse adaptee : republier
+  # apres une publication ratee (P9), le choix des quatre reponses sinon. Rien
+  # pour L1 : une information n'attend pas de reponse. Test K6.
+  if [[ "$niveau" != "L1" ]]; then
+    local reponse="<approuver|refuser|modifier|reporter>"
+    [[ "$raisons" == *"P9:"* ]] && reponse="republier"
+    message="$message
+Repondre : cd $ROOT && ./orchestrator/repondre.sh $TASK_ID $reponse"
+  fi
+  # (2026-09-22, reponse depuis le telephone) Boutons ntfy, seulement si le sujet
+  # de REPONSE est configure (NTFY_TOPIC_REPONSE, opt-in) et hors L1. Jeton de
+  # 128 bits a usage unique, range avec l'escalade : ecouteur.sh n'execute un
+  # bouton que s'il porte le jeton d'une escalade ouverte et non expiree de cette
+  # tache. Qui lit la notification peut appuyer : le secret est le nom du sujet.
+  # Les relances n'ont pas de boutons. Tests K7, K8, B1 a B5.
+  local jeton="" sujet_rep=""
+  ACTIONS_NTFY=""
+  if [[ "$niveau" != "L1" ]] && sujet_rep="$(lire_var_env NTFY_TOPIC_REPONSE)"; then
+    jeton="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    if [[ "$raisons" == *"P9:"* ]]; then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" republier reporter)"
+    else
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver refuser)"
+    fi
+  fi
   notifier "$niveau" "$TASK_ID" "$message"
 
+  # (2026-09-22) Filtre d'origine cite ici (lignes continuees ci-dessous), avant
+  # l'ajout du jeton :
+  # AVANT :     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
+  # AVANT :       relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}' >>"$JOURNAL_ESC_T"
   jq -c -n --arg t "$TASK_ID" --arg n "$niveau" --arg ts "$(date -u +%FT%TZ)" \
     --arg exp "$expiration" --arg d "$defaut" --arg r "$raisons" --argjson rel "$relances" \
+    --arg j "$jeton" \
     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
-      relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}' >>"$JOURNAL_ESC_T"
+      relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}
+     + (if $j == "" then {} else {jeton:$j} end)' >>"$JOURNAL_ESC_T"
 
   # AVANT : if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
   #   (2026-09-22, essai de publication GitHub, defaut 8) Toute escalade ouverte

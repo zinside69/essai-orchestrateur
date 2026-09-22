@@ -88,6 +88,7 @@
     }
   },
   "machine_etats": {
+    "_commentaire": "2026-09-22 (O11, reponse republier) : PUBLISHED ajoute aux sorties de PARKED et BLOCKED. AVANT : \"PARKED\": [\"READY\", \"RUNNING\", \"FAILED\", \"BLOCKED\", \"ESCALATED\"] et \"BLOCKED\": [\"READY\", \"RUNNING\", \"FAILED\"]. Une publication ratee (P9) laisse la tache PARKED ; republier la publie sans relancer l'agent.",
     "etats": ["PENDING", "READY", "RUNNING", "VERIFIED", "REVIEWED", "PUBLISHED", "DONE", "RED", "FAILED", "PARKED", "BLOCKED", "ESCALATED"],
     "initial": "PENDING",
     "terminaux": ["DONE", "BLOCKED"],
@@ -100,9 +101,9 @@
       "PUBLISHED": ["DONE", "ESCALATED", "PARKED"],
       "RED": ["RUNNING", "PARKED"],
       "FAILED": ["RUNNING", "PARKED", "BLOCKED"],
-      "PARKED": ["READY", "RUNNING", "FAILED", "BLOCKED", "ESCALATED"],
+      "PARKED": ["READY", "RUNNING", "FAILED", "BLOCKED", "ESCALATED", "PUBLISHED"],
       "ESCALATED": ["PARKED", "BLOCKED"],
-      "BLOCKED": ["READY", "RUNNING", "FAILED"],
+      "BLOCKED": ["READY", "RUNNING", "FAILED", "PUBLISHED"],
       "DONE": []
     }
   },
