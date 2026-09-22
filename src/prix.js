@@ -33,3 +33,19 @@ export function formaterEuros(centimes) {
   const centsStr = String(absCentimes % 100).padStart(2, '0');
   return `${signe}${eurosStr},${centsStr} €`;
 }
+
+/**
+ * Recapitulatif d'un montant hors taxes : HT, TVA et TTC, formates en euros.
+ * @param {number} htCentimes   montant hors taxes, entier de centimes
+ * @param {number} tauxPourcent taux de TVA en pourcent (20 pour 20 %)
+ * @returns {{ht: string, tva: string, ttc: string}} montants formates
+ */
+export function recapitulatif(htCentimes, tauxPourcent) {
+  const ttcCentimes = montantTTC(htCentimes, tauxPourcent);
+  const tvaCentimes = ttcCentimes - htCentimes;
+  return {
+    ht: formaterEuros(htCentimes),
+    tva: formaterEuros(tvaCentimes),
+    ttc: formaterEuros(ttcCentimes),
+  };
+}
