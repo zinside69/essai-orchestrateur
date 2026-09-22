@@ -280,6 +280,15 @@ Raisons : $raisons
 Defaut si pas de reponse : $defaut
 Expiration : $(heure_humaine "$expiration")
              $expiration"
+  # (2026-09-22, defaut 12) Detail facultatif de la decision : la conclusion de
+  # l'agent pour une tache RED (« fusionner T-001 dans integration »). Sans elle,
+  # l'humain recevait un code (P11) sans savoir quoi faire.
+  local detail
+  detail="$(jq -r '.detail // empty' "$DECISION" 2>/dev/null || true)"
+  if [[ -n "$detail" ]]; then
+    message="$message
+Conclusion de l'agent : $detail"
+  fi
   notifier "$niveau" "$TASK_ID" "$message"
 
   jq -c -n --arg t "$TASK_ID" --arg n "$niveau" --arg ts "$(date -u +%FT%TZ)" \

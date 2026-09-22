@@ -36,6 +36,17 @@ cd "$ROOT"
 git rev-parse --verify "$INTEGRATION_BRANCH" >/dev/null 2>&1 || {
   git switch -c "$INTEGRATION_BRANCH" main && git switch -
 }
+# (2026-09-22, T-002 sur GitHub, defaut 11) Les PR sont fusionnees SUR GitHub :
+# sans fetch, l'integration locale restait a son ancien etat — T-002 est partie
+# sans le code de T-001, dont elle depend, et son agent s'est arrete. Mise a
+# jour en avance rapide seulement : si l'integration locale a diverge, git
+# refuse, la tache s'arrete (P10) et un humain regarde. Test Y6.
+if git remote get-url origin >/dev/null 2>&1 \
+   && git ls-remote --exit-code --heads origin "$INTEGRATION_BRANCH" >/dev/null 2>&1; then
+  git fetch -q origin "$INTEGRATION_BRANCH:$INTEGRATION_BRANCH" \
+    || die "integration locale divergente d'origin/$INTEGRATION_BRANCH : mise a jour refusee"
+  log "Integration a jour depuis origin : $(git rev-parse --short "$INTEGRATION_BRANCH")"
+fi
 git tag -f "$TAG" "$INTEGRATION_BRANCH" >/dev/null
 log "Snapshot posé : $TAG -> rollback = git reset --hard $TAG"
 
@@ -50,6 +61,14 @@ fi
 #   branche existante est reprise telle quelle, sans rien effacer : le travail
 #   d'un essai precedent y reste, comme la session reprise par --resume. Test P5.
 if git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+  # (2026-09-22, defaut 4 bis) Une branche SANS commit propre (essai arrete
+  # avant tout travail) est realignee sur l'integration a jour : reprise telle
+  # quelle, elle figeait l'ancienne base. Rien n'est perdu, elle n'a rien en
+  # propre. Une branche AVEC du travail est reprise sans y toucher. Test Y6.
+  if [[ "$(git rev-list --count "$INTEGRATION_BRANCH..$BRANCH")" == 0 ]]; then
+    git branch -f "$BRANCH" "$INTEGRATION_BRANCH"
+    log "Branche $BRANCH vide realignee sur $INTEGRATION_BRANCH"
+  fi
   git worktree add "$WT" "$BRANCH"
   log "Branche $BRANCH existante reprise (essai precedent)"
 else

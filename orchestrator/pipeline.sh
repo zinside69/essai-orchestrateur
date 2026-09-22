@@ -85,7 +85,20 @@ if (( rcg != 0 )); then
   case "$rcg" in
     10)
       # Controles rouges : le cas normal d'un nouvel essai (RED -> RUNNING).
-      transition RED ;;
+      #   (2026-09-22, T-002 sur GitHub, defaut 12) Faux : le graphe ne relance
+      #   que PENDING/READY, une tache RED restait figee sans prevenir personne —
+      #   alors que l'agent de T-002 avait ecrit quoi faire. RED escalade (P11,
+      #   non derive : L3 par defaut, les canaux de L2 visent une PR qui n'existe
+      #   pas), avec la conclusion de l'agent dans le texte de l'alerte. Test Y4.
+      # AVANT :       transition RED ;;
+      transition RED
+      ESC_RED="$STATE_DIR/$TASK_ID.escalade-rouge.json"
+      RAISONS_GATE="$(jq -r '(.raisons // []) | join(",")' "$GATE_V" 2>/dev/null || true)"
+      DETAIL_AGENT="$(jq -Rr 'fromjson? | select(.type == "result") | .result // empty' \
+        "$LOG_DIR/run-$TASK_ID.jsonl" 2>/dev/null | tail -c 600 || true)"
+      jq -nc --arg r "$RAISONS_GATE" --arg d "$DETAIL_AGENT" \
+        '{raisons: ["P11:controles-rouges(" + $r + ")"], detail: $d}' >"$ESC_RED"
+      "$D/escalade.sh" "$TASK_ID" "$ESC_RED" || true ;;
     20)
       # gate.sh demande un humain (risque, perimetre) : ses raisons font l'escalade.
       transition PARKED
