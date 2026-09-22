@@ -52,6 +52,7 @@ jobs:
           exit "$rc"
 
       - name: Périmètre du diff
+        if: github.event_name == 'pull_request'   # (2026-09-22) sans PR, github.base_ref est vide et git diff echoue
         run: |
           set -Eeuo pipefail
           BASE="origin/${{ github.base_ref }}"
@@ -64,6 +65,7 @@ jobs:
           fi
 
       - name: Interdiction de test neutralisé
+        if: github.event_name == 'pull_request'   # (2026-09-22) sans PR, github.base_ref est vide et git diff echoue
         run: |
           set -Eeuo pipefail
           BASE="origin/${{ github.base_ref }}"
@@ -74,6 +76,7 @@ jobs:
           fi
 
       - name: Interdiction de secret
+        if: github.event_name == 'pull_request'   # (2026-09-22) sans PR, github.base_ref est vide et git diff echoue
         run: |
           set -Eeuo pipefail
           BASE="origin/${{ github.base_ref }}"
@@ -84,6 +87,7 @@ jobs:
           fi
 
       - name: Modification des garde-fous
+        if: github.event_name == 'pull_request'   # (2026-09-22) sans PR, github.base_ref est vide et git diff echoue
         run: |
           set -Eeuo pipefail
           BASE="origin/${{ github.base_ref }}"
