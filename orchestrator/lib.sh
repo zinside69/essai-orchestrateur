@@ -215,6 +215,32 @@ curl_prive() {
   return "$rc"
 }
 
+# sous_verrou_depot <commande...>
+# (2026-09-23, essai de bout en bout, defaut 50) Deux taches lancees dans la meme
+# seconde ecrivent dans les fichiers PARTAGES du depot (.git/config, FETCH_HEAD,
+# references distantes) : git les protege par un verrou qui ECHOUE au lieu
+# d'attendre (« could not lock config file ») — T-003 est tombee ainsi. Ici les
+# ecritures partagees du harnais passent une par une, sous un verrou commun a
+# tous les worktrees (git-common-dir). mkdir est atomique et portable : ni
+# flock (absent de macOS), ni dependance nouvelle. Attente bornee a 120 s, puis
+# echec explicite (code 75) plutot qu'une attente sans fin sur un verrou
+# abandonne. Rend le code de la commande. Tests P6, P7.
+sous_verrou_depot() {
+  local verrou i=0 rc=0
+  verrou="$(git rev-parse --git-common-dir)/orchestrateur.verrou"
+  until mkdir "$verrou" 2>/dev/null; do
+    if (( i >= 1200 )); then
+      log "verrou du depot occupe depuis 120 s : $verrou (le supprimer s'il est abandonne)"
+      return 75
+    fi
+    i=$((i + 1))
+    sleep 0.1
+  done
+  "$@" || rc=$?
+  rmdir "$verrou" 2>/dev/null || true
+  return "$rc"
+}
+
 # Valeur entre guillemets d'un fichier de configuration curl : \ et " echappes.
 # Caracteres nommes plutot qu'ecrits echappes : lisible, et sans piege de citation.
 echapper_config_curl() {

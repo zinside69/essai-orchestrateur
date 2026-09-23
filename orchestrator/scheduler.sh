@@ -174,6 +174,21 @@ run_once() {
   [[ ${#CANDIDATES[@]} -gt 0 ]] || { log "Aucune tache eligible"; return 0; }
 
   RETENUES=()
+  # (2026-09-23, essai de bout en bout, defaut 52) Les conflits n'etaient
+  # verifies qu'entre les taches retenues dans la MEME passe. T-006 est partie
+  # pendant que T-005, en conflit avec elle, tournait encore : sur une
+  # integration sans le code de T-005, sa PR est ressortie CONFLICTING. Un
+  # conflit tient desormais tant que la rivale a commence sans etre terminee —
+  # tout etat hors PENDING, READY, DONE, FAILED : en cours, en revue, publiee
+  # mais pas encore fusionnee, ou suspendue avec du travail sur sa branche.
+  EN_COURS=()
+  for f_ec in "$ETAT_DIR"/taches/*.env; do
+    [[ -f "$f_ec" ]] || continue
+    case "$(sed -n 's/^etat=//p' "$f_ec" | head -1)" in
+      PENDING|READY|DONE|FAILED|'') ;;
+      *) EN_COURS+=("$(basename "$f_ec" .env)") ;;
+    esac
+  done
   for t in "${CANDIDATES[@]}"; do
     [[ -z "$t" ]] && continue
     conflit=0
@@ -184,6 +199,13 @@ run_once() {
       fi
       if jq -e --arg t "$t" --arg r "$r" '(.noeuds[$r].conflits // []) | index($t)' "$G" >/dev/null; then
         conflit=1
+      fi
+    done
+    for r in "${EN_COURS[@]:-}"; do
+      [[ -z "$r" || "$r" == "$t" ]] && continue
+      if jq -e --arg t "$t" --arg r "$r" '((.noeuds[$t].conflits // []) | index($r)) or ((.noeuds[$r].conflits // []) | index($t))' "$G" >/dev/null; then
+        conflit=1
+        log "$t attend : en conflit avec $r, commencee et pas encore terminee (defaut 52)"
       fi
     done
     (( conflit == 0 )) && RETENUES+=("$t")

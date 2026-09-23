@@ -43,7 +43,11 @@ git rev-parse --verify "$INTEGRATION_BRANCH" >/dev/null 2>&1 || {
 # refuse, la tache s'arrete (P10) et un humain regarde. Test Y6.
 if git remote get-url origin >/dev/null 2>&1 \
    && git ls-remote --exit-code --heads origin "$INTEGRATION_BRANCH" >/dev/null 2>&1; then
-  git fetch -q origin "$INTEGRATION_BRANCH:$INTEGRATION_BRANCH" \
+  # AVANT :   git fetch -q origin "$INTEGRATION_BRANCH:$INTEGRATION_BRANCH" \
+  #   (2026-09-23, defaut 50) deux taches parties ensemble faisaient ce fetch dans
+  #   la meme seconde (T-003 et T-005) : FETCH_HEAD et les references sont
+  #   partages. Sous le verrou du depot, un seul a la fois. Test P7.
+  sous_verrou_depot git fetch -q origin "$INTEGRATION_BRANCH:$INTEGRATION_BRANCH" \
     || die "integration locale divergente d'origin/$INTEGRATION_BRANCH : mise a jour refusee"
   log "Integration a jour depuis origin : $(git rev-parse --short "$INTEGRATION_BRANCH")"
 fi
@@ -87,7 +91,16 @@ if git remote get-url origin >/dev/null 2>&1; then
   #   Invisible tant que le projet orchestre n'avait pas de remote. La
   #   neutralisation va desormais dans la configuration PROPRE au worktree
   #   (config.worktree), que le depot principal ne lit pas. Test Y2.
-  git config extensions.worktreeConfig true
+  # AVANT :   git config extensions.worktreeConfig true
+  #   (2026-09-23, essai de bout en bout, defaut 50) Cette ecriture dans le
+  #   .git/config PARTAGE avait lieu a chaque lancement : T-003 et T-005, parties
+  #   dans la meme seconde, se sont disputees son verrou et T-003 a perdu
+  #   (rc 255, P10). La valeur ne change jamais une fois posee : on ne l'ecrit que
+  #   si elle manque, et sous le verrou du depot. config.worktree, lui, est propre
+  #   au worktree : pas de concurrence. Test P6.
+  if [[ "$(git config --get extensions.worktreeConfig || true)" != true ]]; then
+    sous_verrou_depot git config extensions.worktreeConfig true
+  fi
   git config --worktree remote.origin.pushurl "no-push://interdit"
   log "pushurl neutralisée dans le worktree"
 fi
