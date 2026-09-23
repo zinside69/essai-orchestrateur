@@ -16,6 +16,20 @@ export function montantTTC(htCentimes, tauxPourcent) {
 }
 
 /**
+ * Montant HT en centimes, arrondi au centime le plus proche (inverse de montantTTC).
+ * @param {number} ttcCentimes  montant toutes taxes comprises, entier de centimes
+ * @param {number} tauxPourcent taux de TVA en pourcent (20 pour 20 %)
+ * @returns {number} montant HT en centimes
+ * @throws {TypeError} si ttcCentimes n'est pas un entier
+ */
+export function montantHT(ttcCentimes, tauxPourcent) {
+  if (!Number.isInteger(ttcCentimes)) {
+    throw new TypeError('ttcCentimes doit etre un entier de centimes');
+  }
+  return Math.round((ttcCentimes * 100) / (100 + tauxPourcent));
+}
+
+/**
  * Formate un montant en centimes en euros lisibles (espace pour les milliers,
  * virgule pour les decimales, symbole € final).
  * @param {number} centimes montant entier de centimes (peut etre negatif)

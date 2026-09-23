@@ -1,7 +1,7 @@
 // Tests de src/prix.js — lancés par `npm run test` (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { montantTTC, formaterEuros, recapitulatif } from '../src/prix.js';
+import { montantTTC, montantHT, formaterEuros, recapitulatif } from '../src/prix.js';
 
 test('montantTTC applique le taux et arrondit au centime', () => {
   assert.equal(montantTTC(1000, 20), 1200);
@@ -10,6 +10,22 @@ test('montantTTC applique le taux et arrondit au centime', () => {
 
 test('montantTTC refuse un montant non entier', () => {
   assert.throws(() => montantTTC(10.5, 20), TypeError);
+});
+
+test('montantHT retire le taux du montant TTC', () => {
+  assert.equal(montantHT(12000, 20), 10000);
+});
+
+test('montantHT arrondit au centime le plus proche', () => {
+  assert.equal(montantHT(1199, 20), 999); // 999,17 arrondi
+});
+
+test('montantHT gere un taux decimal', () => {
+  assert.equal(montantHT(1, 5.5), 1); // 0,95 arrondi
+});
+
+test('montantHT refuse un montant non entier', () => {
+  assert.throws(() => montantHT(10.5, 20), TypeError);
 });
 
 test('formaterEuros separe les milliers par une espace', () => {
