@@ -204,10 +204,31 @@ notifier() {
         # (2026-09-22) Boutons de reponse (ACTIONS_NTFY, pose par ouvrir_escalade)
         # quand il y en a. Ligne d'origine, avant l'en-tete « Actions » :
         # AVANT :         curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" \
+        # AVANT :         local boutons=()
+        # AVANT :         [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=(-H "Actions: $ACTIONS_NTFY")
+        # AVANT :         curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" "${boutons[@]}" \
+        # AVANT :           -d "$message" "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" >/dev/null 2>&1 || rc=$? ;;
+        #   (2026-09-23, defaut 46) le sujet d'alerte (URL) et le jeton (en-tete
+        #   Actions) se lisaient dans `ps` le temps de l'appel : tous deux passent
+        #   par curl_prive (fichier -K en 600). Le message reste en argument : il ne
+        #   contient ni sujet ni jeton. Test K9.
         local boutons=()
-        [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=(-H "Actions: $ACTIONS_NTFY")
-        curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" "${boutons[@]}" \
-          -d "$message" "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" >/dev/null 2>&1 || rc=$? ;;
+        [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=("Actions: $ACTIONS_NTFY")
+        # AVANT :         curl_prive "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" "${boutons[@]}" -- \
+        # AVANT :           -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" -d "$message" >/dev/null 2>&1 || rc=$? ;;
+        #   (2026-09-23, O19) sans NTFY_TOPIC, repli sur « mon-projet-agents » : un
+        #   sujet public au nom generique, ou toute alerte partait, lisible par qui
+        #   s'y abonne. Plus de repli : le canal echoue (68), journalise et compte
+        #   par M17, sans aucun appel reseau. Test K11.
+        local sujet_alerte
+        sujet_alerte="$(lire_var_env NTFY_TOPIC)" || sujet_alerte=""
+        if [[ -z "$sujet_alerte" ]]; then
+          log "[NOTIF] $c : NTFY_TOPIC non configure ($ORCHESTRATEUR_ENV), rien envoye"
+          rc=68
+        else
+          curl_prive "https://ntfy.sh/$sujet_alerte" "${boutons[@]}" -- \
+            -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" -d "$message" >/dev/null 2>&1 || rc=$?
+        fi ;;
       github_issue)
         gh issue create --title "[$niveau] $tache — decision requise" \
           --body "$message" --label "agent,escalade-$niveau" >/dev/null 2>&1 || rc=$? ;;

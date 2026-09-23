@@ -187,3 +187,39 @@ actions_ntfy() {
   done
   printf '%s' "$sortie"
 }
+
+# curl_prive <url> [en-tete secret ...] -- [option curl ...]
+# (2026-09-23, defaut 46) Les arguments d'un processus se lisent dans `ps` par
+# tout processus du meme utilisateur — les agents lances par le socle compris.
+# Or l'URL ntfy porte le NOM du sujet, qui est le secret (sujet d'alerte : il
+# transporte les jetons des boutons ; sujet de reponse), et l'en-tete Actions
+# porte le jeton. URL et en-tetes secrets passent donc par un fichier de
+# configuration curl en 600, efface apres l'appel — meme regle que la cle Brevo
+# (escalade.sh, envoyer_email). Les options apres « -- » restent en argument :
+# elles ne doivent rien contenir de secret. Rend le code de curl. Tests K9, B6.
+curl_prive() {
+  local cfg rc=0
+  cfg="$(mktemp)"
+  chmod 600 "$cfg"
+  {
+    printf 'url = "%s"\n' "$(echapper_config_curl "$1")"
+    shift
+    while [[ $# -gt 0 && "$1" != -- ]]; do
+      printf 'header = "%s"\n' "$(echapper_config_curl "$1")"
+      shift
+    done
+  } >"$cfg"
+  [[ "${1:-}" == -- ]] && shift
+  curl -K "$cfg" "$@" || rc=$?
+  rm -f "$cfg"
+  return "$rc"
+}
+
+# Valeur entre guillemets d'un fichier de configuration curl : \ et " echappes.
+# Caracteres nommes plutot qu'ecrits echappes : lisible, et sans piege de citation.
+echapper_config_curl() {
+  # shellcheck disable=SC1003  # '\' est bien une barre oblique inverse seule, pas un guillemet echappe
+  local bs='\' dq='"' v
+  v="${1//"$bs"/"$bs$bs"}"
+  printf '%s' "${v//"$dq"/"$bs$dq"}"
+}

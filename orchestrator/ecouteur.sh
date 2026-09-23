@@ -63,7 +63,9 @@ journaliser() {  # journaliser <issue> <raison> <corps>
 confirmer() {  # confirmer <texte> : sur le sujet d'alerte, si configure
   local sujet
   sujet="$(lire_var_env NTFY_TOPIC)" || return 0
-  curl -sS -H "Title: Reponse recue" -H "Tags: robot" -d "$1" "https://ntfy.sh/$sujet" >/dev/null 2>&1 || true
+  # AVANT :   curl -sS -H "Title: Reponse recue" -H "Tags: robot" -d "$1" "https://ntfy.sh/$sujet" >/dev/null 2>&1 || true
+  #   (2026-09-23, defaut 46) le sujet d'alerte se lisait dans `ps` : URL par curl_prive. Test B6.
+  curl_prive "https://ntfy.sh/$sujet" -- -sS -H "Title: Reponse recue" -H "Tags: robot" -d "$1" >/dev/null 2>&1 || true
 }
 
 # traiter <corps> : 0 si la reponse a ete executee, 1 sinon (refus ou echec).
@@ -115,6 +117,9 @@ while true; do
     [[ "$(jq -r '.event // empty' <<<"$ligne" 2>/dev/null)" == "message" ]] || continue
     jq -r '.id' <<<"$ligne" >"$DERNIER"
     traiter "$(jq -r '.message // ""' <<<"$ligne")" || true
-  done < <(curl -sSN "https://ntfy.sh/$SUJET/json?since=$depuis" 2>/dev/null || true)
+  # AVANT :   done < <(curl -sSN "https://ntfy.sh/$SUJET/json?since=$depuis" 2>/dev/null || true)
+  #   (2026-09-23, defaut 46) le sujet de reponse restait lisible dans `ps` et
+  #   `systemctl status` tant que l'ecouteur tournait : URL par curl_prive. Test B6.
+  done < <(curl_prive "https://ntfy.sh/$SUJET/json?since=$depuis" -- -sSN 2>/dev/null || true)
   sleep 5   # flux coupe (reseau, veille) : on se reconnecte
 done
