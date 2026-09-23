@@ -178,6 +178,22 @@ if [[ "$VERDICT" == "AUTO_MERGE" ]] \
   RAISONS+=("Q1:critere-non-prouve(R2)-fusion-automatique-refusee")
 fi
 
+# --- Q3 — tests jamais vus rouges : jamais de fusion automatique ---------
+# (2026-09-22) Meme esprit que Q1, mais sur une MESURE du harnais et non sur un
+# jugement du relecteur : test-rouge.sh a rejoue les tests de l'agent sur
+# l'integration, sans son code. S'ils y passent aussi, ou s'il n'y en a pas, ou
+# si la mesure a echoue, rien ne prouve le correctif : AUTO_MERGE est ramene a
+# PR_READY. Non configure (pas de test_rouge dans gates.json) : rien ne change.
+# Tests A1 a A4.
+TEST_ROUGE="$(jq -r '.statut // empty' "$STATE_DIR/$TASK_ID.test-rouge.json" 2>/dev/null || true)"
+if [[ "$VERDICT" == "AUTO_MERGE" ]]; then
+  case "$TEST_ROUGE" in
+    jamais-rouge) VERDICT="PR_READY"; RAISONS+=("Q3:test-jamais-vu-rouge-fusion-automatique-refusee") ;;
+    aucun-test)   VERDICT="PR_READY"; RAISONS+=("Q3:aucun-test-fusion-automatique-refusee") ;;
+    erreur)       VERDICT="PR_READY"; RAISONS+=("Q3:preuve-rouge-impossible-fusion-automatique-refusee") ;;
+  esac
+fi
+
 # --- M4 / défaut : fail-safe --------------------------------------------
 if [[ -z "$VERDICT" ]]; then
   VERDICT="$(jq -r '.defaut' "$M")"

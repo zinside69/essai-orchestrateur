@@ -132,6 +132,11 @@ fi
 # Evidence pack complet : la tache est verifiee (Phase 5 / P3-a)
 transition VERIFIED
 
+# 1ter. Preuve « test vu rouge » mesuree (2026-09-22) : les tests de l'agent
+# rejoues sur l'integration, sans son code. Le resultat (state/T.test-rouge.json)
+# nourrit la regle Q3 de decide.sh ; la mesure n'interrompt jamais le pipeline.
+"$D/test-rouge.sh" "$TASK_ID" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1 || true
+
 # 2. Revue croisee a contexte neuf (Phase 2)
 if ! "$D/review.sh" "$TASK_ID" "$WT" "$INTEGRATION_BRANCH" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1; then
   transition PARKED

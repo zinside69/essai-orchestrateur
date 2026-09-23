@@ -53,6 +53,18 @@ else
   DOCS=(CLAUDE.md .claude/reviewer-invariants.md .claude/agents/reviewer-diff.md)
 fi
 
+# (2026-09-22, defaut 45) La « restauration garantie » annoncee plus bas n'etait
+# garantie par rien : un run interrompu entre les deux « mv » laissait le
+# document renomme en .pruned — constate sur le CLAUDE.md du socle lui-meme.
+# Reprise d'abord (y compris en --dry-run) : un .pruned sans son original est un
+# reste d'interruption, meme par SIGKILL, qu'aucun trap n'intercepte. Test J3.
+for doc in "${DOCS[@]}"; do
+  if [[ -f "$ROOT/$doc.pruned" && ! -e "$ROOT/$doc" ]]; then
+    mv "$ROOT/$doc.pruned" "$ROOT/$doc"
+    log "document restaure (reste d'une mesure interrompue) : $doc"
+  fi
+done
+
 if (( DRY_RUN == 1 )); then
   printf '[DRY-RUN prune] docs=%s\n' "${DOCS[*]}"
   printf '[DRY-RUN prune] journal=%s rapport=%s\n' "$PRUNE_LOG" "$SORTIE"
@@ -80,6 +92,21 @@ RAPPORT_TMP="$(mktemp)"
   printf '%s\n' '|---|---:|---:|---:|---|---|'
 } >"$RAPPORT_TMP"
 
+# (2026-09-22, defaut 45) Et pendant la mesure : remise en place sur toute
+# sortie, Ctrl+C, TERM, fermeture du terminal ou erreur. (Bash execute le trap
+# une fois la commande en cours terminee.) SIGKILL reste couvert par la reprise
+# au demarrage, ci-dessus.
+DOC_NEUTRALISE=""
+# shellcheck disable=SC2329  # appelee par les trap ci-dessous
+restaurer_doc() {
+  if [[ -n "$DOC_NEUTRALISE" && -f "$DOC_NEUTRALISE.pruned" ]]; then
+    mv "$DOC_NEUTRALISE.pruned" "$DOC_NEUTRALISE"
+    log "document restaure apres interruption : $DOC_NEUTRALISE"
+  fi
+}
+trap restaurer_doc EXIT
+trap 'restaurer_doc; exit 130' INT TERM HUP
+
 for doc in "${DOCS[@]}"; do
   F="$ROOT/$doc"
   if [[ ! -f "$F" ]]; then
@@ -90,8 +117,10 @@ for doc in "${DOCS[@]}"; do
   cp "$F" "$BAK"
   # Neutralise le document (restauration garantie même en cas d'échec)
   mv "$F" "$F.pruned"
+  DOC_NEUTRALISE="$F"
   SANS="$(mesure)"
   mv "$F.pruned" "$F"
+  DOC_NEUTRALISE=""
   cmp -s "$BAK" "$F" || cp "$BAK" "$F"
   rm -f "$BAK"
   DELTA="$(awk -v a="$BASELINE" -v s="$SANS" 'BEGIN{printf "%+.3f", a-s}')"
