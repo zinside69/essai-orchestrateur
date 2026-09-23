@@ -1,7 +1,7 @@
 // Tests de src/prix.js — lancés par `npm run test` (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { montantTTC, montantHT, formaterEuros, recapitulatif } from '../src/prix.js';
+import { montantTTC, montantHT, formaterEuros, recapitulatif, recapitulatifDepuisTTC } from '../src/prix.js';
 
 test('montantTTC applique le taux et arrondit au centime', () => {
   assert.equal(montantTTC(1000, 20), 1200);
@@ -57,4 +57,28 @@ test('recapitulatif formate le montant ttc', () => {
 test('recapitulatif formate le montant de tva', () => {
   const { tva } = recapitulatif(1000, 20);
   assert.equal(tva, '2,00 €');
+});
+
+test('recapitulatifDepuisTTC formate le montant hors taxes', () => {
+  const { ht } = recapitulatifDepuisTTC(12000, 20);
+  assert.equal(ht, '100,00 €');
+});
+
+test('recapitulatifDepuisTTC formate le montant de tva', () => {
+  const { tva } = recapitulatifDepuisTTC(12000, 20);
+  assert.equal(tva, '20,00 €');
+});
+
+test('recapitulatifDepuisTTC formate le montant ttc', () => {
+  const { ttc } = recapitulatifDepuisTTC(12000, 20);
+  assert.equal(ttc, '120,00 €');
+});
+
+test('recapitulatifDepuisTTC deduit la tva du ht arrondi', () => {
+  // 1199 TTC a 20 % : ht = 999 (999,17 arrondi), tva = 1199 - 999 = 200
+  assert.deepEqual(recapitulatifDepuisTTC(1199, 20), {
+    ht: '9,99 €',
+    tva: '2,00 €',
+    ttc: '11,99 €',
+  });
 });
