@@ -63,3 +63,20 @@ export function recapitulatif(htCentimes, tauxPourcent) {
     ttc: formaterEuros(ttcCentimes),
   };
 }
+
+/**
+ * Recapitulatif d'un montant toutes taxes comprises : HT, TVA et TTC, formates en euros.
+ * @param {number} ttcCentimes  montant toutes taxes comprises, entier de centimes
+ * @param {number} tauxPourcent taux de TVA en pourcent (20 pour 20 %)
+ * @returns {{ht: string, tva: string, ttc: string}} montants formates
+ * @throws {TypeError} si ttcCentimes n'est pas un entier
+ */
+export function recapitulatifDepuisTTC(ttcCentimes, tauxPourcent) {
+  const htCentimes = montantHT(ttcCentimes, tauxPourcent);
+  const tvaCentimes = ttcCentimes - htCentimes;
+  return {
+    ht: formaterEuros(htCentimes),
+    tva: formaterEuros(tvaCentimes),
+    ttc: formaterEuros(ttcCentimes),
+  };
+}
