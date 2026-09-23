@@ -63,7 +63,12 @@ ETAT_ACTUEL="$(sed -n 's/^etat=//p' "$ENVF" | head -1)"
 
 # Etat cible selon la decision humaine (transition gardee, Phase 5 / P3-a)
 case "$DECISION_H" in
-  approuver) CIBLE="RUNNING" ;;
+  # AVANT :   approuver) CIBLE="RUNNING" ;;
+  #   (2026-09-23, O22) Rien ne reprenait jamais une tache RUNNING apres une
+  #   reponse : le planificateur ne lance que READY. Chaque approbation creait une
+  #   tache fantome qui occupait une place de parallelisme. Affine plus bas selon
+  #   le contexte (relance READY, ou publication PUBLISHED). Test Y9.
+  approuver) CIBLE="READY" ;;
   refuser)   CIBLE="FAILED" ;;
   modifier)  CIBLE="READY" ;;
   reporter)  CIBLE="PARKED" ;;
@@ -84,10 +89,45 @@ if [[ "$DECISION_H" == "republier" ]]; then
     || die "republier : decision publiable introuvable pour $TASK_ID (verdict : ${VERDICT_PRIS:-aucun})"
 fi
 
+# (2026-09-23, O22, decision de l'operateur) « approuver » selon le contexte :
+#   - escalade SANS travail pret — panne de run-task (P10), controles rouges
+#     (P11), preuve manquante (P8) — : la tache est RELANCEE (READY), le
+#     planificateur la reprend a sa prochaine passe ;
+#   - travail PRET — branche d'agent qui porte des commits, worktree present,
+#     escalade prise a la decision (plafond P1, desaccord ou risque M3, ...) — :
+#     il est PUBLIE en PR a relire (PR_READY, jamais de fusion automatique),
+#     sans relancer l'agent ; echec de publication = escalade maintenue ;
+#   - sinon : relance.
+MODE_APPROUVER=""
+WT_T="$WORKTREE_ROOT/$TASK_ID"
+if [[ "$DECISION_H" == "approuver" ]]; then
+  RAISONS_OUVERTES="$(jq -r --arg t "$TASK_ID" 'select(.tache == $t and .statut == "ouverte") | .raisons' \
+    "$JOURNAL_ESC_T" 2>/dev/null | tail -1 || true)"
+  COMMITS_AGENT="$(git -C "$ROOT" rev-list "$INTEGRATION_BRANCH..$AGENT_BRANCH_PREFIX/$TASK_ID" 2>/dev/null || true)"
+  if [[ "$RAISONS_OUVERTES" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
+    MODE_APPROUVER="relancer"
+  elif [[ -d "$WT_T" && -n "$COMMITS_AGENT" ]]; then
+    MODE_APPROUVER="publier"
+    CIBLE="PUBLISHED"
+  else
+    MODE_APPROUVER="relancer"
+  fi
+fi
+
 if (( DRY_RUN == 1 )); then
   printf '[DRY-RUN repondre] task=%s decision=%s message=%s etat_avant=%s origine=%s regle=%s\n' \
     "$TASK_ID" "$DECISION_H" "$MESSAGE" "$ETAT_ACTUEL" "$ORIGINE" "$REGLE"
+  [[ -z "$MODE_APPROUVER" ]] || printf '[DRY-RUN repondre] approuver => %s (etat cible %s)\n' "$MODE_APPROUVER" "$CIBLE"
   exit 0
+fi
+
+if [[ "$MODE_APPROUVER" == "publier" ]]; then
+  PUBLICATION_VERDICT_HUMAIN=PR_READY "$ROOT/orchestrator/publisher.sh" "$TASK_ID" "$WT_T" \
+    >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1 \
+    || die "approuver : publication en echec (voir $LOG_DIR/pipeline-$TASK_ID.log) — escalade maintenue"
+  log "Travail approuve publie en PR a relire : $TASK_ID"
+elif [[ "$MODE_APPROUVER" == "relancer" ]]; then
+  log "Approuve sans travail pret : $TASK_ID relancee (READY)"
 fi
 
 # Publication relancee seule, depuis le worktree de la tache. Nouvel echec :

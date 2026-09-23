@@ -48,10 +48,17 @@ git -C "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
 # --- Prompt : diff + déclaration de tâche + invariants. Rien d'autre -------
 mapfile -t T < <(parse_task "$TASK_ID")
 
+# (2026-09-23, essai de bout en bout, O23) Le prompt ouvrait sur la ligne
+# AVANT : FICHIER DE DIFF : $DIFF
+# — un fichier que la politique interdit au relecteur — et ne donnait le diff
+# que plus bas, « pour information ». Deux entrees concurrentes : sur T-007 le
+# relecteur a suivi la premiere, l'a trouvee illisible et conclu desaccord sans
+# juger le code ; sur T-003 a T-006 il avait pris la seconde. Le verdict
+# dependait du modele. Une seule entree desormais, nommee opposable. Test W4.
 PROMPT="$(cat <<EOF
 Relis le diff ci-dessous contre la déclaration de tâche, puis produis ton jugement JSON.
 
-FICHIER DE DIFF : $DIFF
+DIFF : fourni intégralement plus bas, section « ENTREE OPPOSABLE — DIFF ».
 INVARIANTS OPPOSABLES : $WT/.claude/reviewer-invariants.md
 
 DÉCLARATION DE TÂCHE
@@ -72,9 +79,12 @@ EOF
 # « desaccord » faute d'entree. Une seule politique pour deux agents : le diff
 # passe donc par le prompt, borne par le quota de gate.sh (MAX_LINES). Le
 # fichier reste ecrit : trace, et controle V4 (diff non vide).
+# AVANT : CONTENU INTEGRAL DU DIFF (le fichier nomme plus haut ne t'est pas lisible : le voici)
+#   (2026-09-23, O23) remplacee par l'intitule ci-dessous : le diff du prompt est
+#   L'entree, pas un substitut d'un fichier illisible.
 PROMPT="$PROMPT
 
-CONTENU INTEGRAL DU DIFF (le fichier nomme plus haut ne t'est pas lisible : le voici)
+ENTREE OPPOSABLE — DIFF (c'est lui que tu juges ; aucun fichier de diff n'est à lire sur le disque)
 \`\`\`diff
 $(cat "$DIFF")
 \`\`\`"

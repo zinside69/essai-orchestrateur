@@ -27,7 +27,10 @@ reconstituer, ni spéculer sur les intentions de l'auteur. Tu juges uniquement c
 
 # Entrées
 
-1. Le fichier de diff unifié : `.orchestrator/state/<T-NNN>.diff`
+<!-- (2026-09-23, O23) AVANT : « 1. Le fichier de diff unifié : `.orchestrator/state/<T-NNN>.diff` ». Ce fichier est interdit en lecture au relecteur par la politique : sur T-007, le relecteur a conclu « entrée illisible » et rendu desaccord sans juger le code, alors que le diff était dans sa consigne. Une seule entrée désormais. Tests W4, Z2. -->
+1. Le diff unifié, **fourni intégralement dans ta consigne**, section « ENTREE OPPOSABLE — DIFF ».
+   C'est lui, et lui seul, que tu juges. Ne cherche aucun fichier de diff sur le disque : il n'y
+   en a pas d'autre à lire.
 2. La déclaration de tâche : identifiant, périmètre, critère de done, gates attendus
 3. Les invariants : `.claude/reviewer-invariants.md`
 

@@ -11,7 +11,18 @@ BRANCH="$AGENT_BRANCH_PREFIX/$TASK_ID"
 
 require git gh jq
 
-VERDICT="$(jq -r '.verdict' "$DECISION")"
+# AVANT : VERDICT="$(jq -r '.verdict' "$DECISION")"
+#   (2026-09-23, O22) Une escalade approuvee par un humain alors que le travail
+#   est pret se publie en PR A RELIRE (decision de l'operateur : jamais de fusion
+#   automatique sur approbation). repondre.sh pose PUBLICATION_VERDICT_HUMAIN ;
+#   seule la valeur PR_READY est admise, toute autre arrete la publication.
+if [[ -n "${PUBLICATION_VERDICT_HUMAIN:-}" ]]; then
+  [[ "$PUBLICATION_VERDICT_HUMAIN" == PR_READY ]] \
+    || die "verdict humain refuse : $PUBLICATION_VERDICT_HUMAIN (seul PR_READY est admis)"
+  VERDICT="$PUBLICATION_VERDICT_HUMAIN"
+else
+  VERDICT="$(jq -r '.verdict' "$DECISION")"
+fi
 REVUE="$(jq -r  '.axe_d_revue.verdict'  "$DECISION")"
 RISQUE="$(jq -r '.axe_c_risque'         "$DECISION")"
 CONF="$(jq -r   '.axe_d_revue.confiance' "$DECISION")"

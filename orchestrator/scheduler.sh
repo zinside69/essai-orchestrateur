@@ -7,7 +7,9 @@ set -Eeuo pipefail
 source "$(dirname "$0")/lib.sh"
 
 ETAT_DIR="$ORCH_DIR/etat"
-E="$ROOT/orchestrator/escalade.json"
+# (2026-09-23, O24) Meme politique que escalade.sh, meme surcharge.
+# AVANT : E="$ROOT/orchestrator/escalade.json"
+E="${ORCH_ESCALADE:-$ROOT/orchestrator/escalade.json}"
 PARALLELE="${PARALLELE:-2}"
 INVENTAIRE=0
 BOUCLE=0
@@ -133,9 +135,24 @@ reconcilier() {
     || log "reconcile : echec (voir $LOG_DIR/reconcile.log)"
 }
 
+# (2026-09-23, O21) Personne n'appelait « escalade.sh --verifier-expirations » :
+# les escalades n'expiraient jamais, les relances ne partaient jamais (M09 = 0.0),
+# le disjoncteur L4, evalue au meme endroit, jamais non plus. Lance a chaque passe,
+# AVANT le controle de PAUSE : c'est quand le pipeline attend un humain que les
+# relances comptent. Rendu possible par O20 (une tache DONE ou PUBLISHED n'est plus
+# touchee) et le defaut 54 (passe menee a son terme). Un echec ne bloque pas le
+# planificateur : il est journalise, comme reconcile. Test Y10.
+verifier_expirations() {
+  local opt=()
+  (( DRY_RUN == 1 )) && opt=(--dry-run)
+  "$ROOT/orchestrator/escalade.sh" "${opt[@]}" --verifier-expirations >>"$LOG_DIR/expirations.log" 2>&1 \
+    || log "expirations : echec (voir $LOG_DIR/expirations.log)"
+}
+
 run_once() {
   local G="$ETAT_DIR/graphe.json" MANIFESTE_SHA GRAPHE_SHA EN_COURS PLACES
 
+  verifier_expirations
   if [[ -f "$STATE_DIR/planificateur" ]] && grep -q '^PAUSE' "$STATE_DIR/planificateur"; then
     log "DISJONCTEUR ACTIF — planificateur en PAUSE. Aucune nouvelle tache lancee."
     return 0

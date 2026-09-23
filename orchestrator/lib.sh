@@ -178,11 +178,19 @@ journaliser_cout() {
 # bouton par reponse. Appuyer publie « T-NNN <reponse> <jeton> » sur le sujet de
 # REPONSE, que lit ecouteur.sh. Pas de virgule ni de point-virgule dans le
 # corps : ce sont les separateurs de l'en-tete. Test K7.
+# (2026-09-23, O22) Une reponse peut porter son libelle : « approuver:Relancer »
+# affiche « Relancer » et envoie « approuver ». Sans « : », libelle = reponse
+# capitalisee (comportement d'avant). Tests K7, K13.
 actions_ntfy() {
-  local tache="$1" jeton="$2" sujet="$3" r sortie="" sep=""
+  # AVANT :   local tache="$1" jeton="$2" sujet="$3" r sortie="" sep=""
+  local tache="$1" jeton="$2" sujet="$3" r rep lib sortie="" sep=""
   shift 3
   for r in "$@"; do
-    sortie+="${sep}http, ${r^}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${r} ${jeton}, clear=true"
+    rep="${r%%:*}"
+    lib="${r#*:}"
+    [[ "$r" == *:* ]] || lib="${rep^}"
+    # AVANT :     sortie+="${sep}http, ${r^}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${r} ${jeton}, clear=true"
+    sortie+="${sep}http, ${lib}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${rep} ${jeton}, clear=true"
     sep="; "
   done
   printf '%s' "$sortie"
