@@ -89,6 +89,39 @@ ENTREE OPPOSABLE — DIFF (c'est lui que tu juges ; aucun fichier de diff n'est 
 $(cat "$DIFF")
 \`\`\`"
 
+# --- Compte rendu de l'auteur (2026-09-24, ADR 0002, verrou 5) -------------
+# L'agent rend compte au valideur. Sur T-001 (iziGSM), son rapport (« E2E jamais
+# joues ») n'allait a personne. Le compte rendu est un ARTEFACT depose par
+# l'auteur et lu par le harnais, pas sa session : I2 tient. Il est une
+# declaration a verifier, jamais une entree opposable : seul le diff l'est. Les
+# modifications appliquees par le harnais sur decision humaine sont nommees, pour
+# que le relecteur ne les impute pas a l'agent. Tests EC7, EC9.
+CR_AUTEUR="$STATE_DIR/$TASK_ID.compte-rendu.json"
+if [[ -s "$CR_AUTEUR" ]]; then
+  CR_TEXTE="$(cat "$CR_AUTEUR")"
+else
+  CR_TEXTE='AUCUN COMPTE RENDU FOURNI PAR L AUTEUR — il devait en rendre un ; signale-le.'
+fi
+PROMPT="$PROMPT
+
+COMPTE RENDU DE L'AUTEUR — déclaration à VÉRIFIER contre le diff, point par point (critères,
+écarts, tests joués ou non, demandes). Elle n'est pas opposable : une affirmation que le diff
+ne confirme pas est un rejet.
+\`\`\`json
+$CR_TEXTE
+\`\`\`"
+if [[ -s "$STATE_DIR/$TASK_ID.demandes-appliquees" ]]; then
+  PROMPT="$PROMPT
+
+MODIFICATIONS APPLIQUEES PAR LE HARNAIS SUR DECISION HUMAINE (demandes d'écriture approuvées,
+texte appliqué tel quel ; ce n'est pas l'agent qui les a écrites) : $(cut -f1 "$STATE_DIR/$TASK_ID.demandes-appliquees" | sort -u | tr '\n' ' ')"
+fi
+if [[ "$(cat "$STATE_DIR/$TASK_ID.demandes.decision" 2>/dev/null || true)" == refusee ]]; then
+  PROMPT="$PROMPT
+
+DEMANDES D'ÉCRITURE REFUSÉES PAR L'HUMAIN : la tâche doit tenir sans elles."
+fi
+
 # --- Skill de revue (2026-09-21) --------------------------------------------
 # Designe par orchestrator/skills.json. L'outil Skill est autorise pour CE skill
 # seulement : sans l'ajout, --allowed-tools le refuserait. Le skill apporte une

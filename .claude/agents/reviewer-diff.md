@@ -33,6 +33,10 @@ reconstituer, ni spéculer sur les intentions de l'auteur. Tu juges uniquement c
    en a pas d'autre à lire.
 2. La déclaration de tâche : identifiant, périmètre, critère de done, gates attendus
 3. Les invariants : `.claude/reviewer-invariants.md`
+<!-- (2026-09-25, O37) Ajout de l'entrée 4. Test Z5. -->
+4. Le cas échéant, la section « MODIFICATIONS APPLIQUEES PAR LE HARNAIS SUR DECISION
+   HUMAINE » : ces fichiers ne sont pas imputables à l'auteur. Applique l'exception décrite
+   dans les invariants — aucun rejet R1, R4, R6, R7 sur eux ; R5 (secret) reste opposable.
 
 Si l'une de ces entrées est absente ou illisible, tu retournes immédiatement
 `{"schema_version":"2.0","verdict":"desaccord","confiance":1.0,"rejets":[...],"erreur":"entree manquante"}`.

@@ -42,7 +42,12 @@ AB_EVAL_LOG="$ORCH_DIR/journal/evals-ab.jsonl"
 QUAR="$ORCH_DIR/etat/quarantaine.tsv"
 PRUNE_LOG="$ORCH_DIR/journal/prune-docs.jsonl"
 QUAR_DOCS="$ORCH_DIR/etat/quarantaine-docs.tsv"
-DEP="$(date -u -d "-${JOURS} days" +%FT%TZ)"
+# (2026-09-24) Fenetre calculee depuis ORCH_AUJOURDHUI si elle est posee (meme
+# variable qu'answer.sh, O27), sinon depuis maintenant. Les tests datent leurs
+# donnees : juges au jour ou ils tournent, ils sortaient de la fenetre de 7 jours
+# (E1 rouge le 24/09 sans changement de code, donnees du 17/09).
+# AVANT : DEP="$(date -u -d "-${JOURS} days" +%FT%TZ)"
+DEP="$(date -u -d "${ORCH_AUJOURDHUI:-now} -${JOURS} days" +%FT%TZ)"
 
 if (( DRY_RUN == 1 )); then
   printf '[DRY-RUN dashboard] decisions=%s\n' "$DEC"

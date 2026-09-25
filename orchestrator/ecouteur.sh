@@ -68,6 +68,26 @@ confirmer() {  # confirmer <texte> : sur le sujet d'alerte, si configure
   curl_prive "https://ntfy.sh/$sujet" -- -sS -H "Title: Reponse recue" -H "Tags: robot" -d "$1" >/dev/null 2>&1 || true
 }
 
+# projets_declares : les autres projets servis par cet ecouteur, un par ligne.
+# (2026-09-25, O36) ORCH_PROJETS (~/.orchestrateur.env) : chemins ABSOLUS de
+# projets orchestres, separes par « : », sans espace. Un chemin relatif, ou sans
+# .orchestrator/, est ignore et signale : jamais resolu depuis le dossier courant.
+# Sans ORCH_PROJETS : aucun, l'ecouteur ne sert que son projet (comme avant).
+projets_declares() {
+  local liste p
+  local -a chemins
+  liste="$(lire_var_env ORCH_PROJETS)" || return 0
+  IFS=':' read -ra chemins <<<"$liste"
+  for p in "${chemins[@]}"; do
+    [[ -n "$p" && "$p" != "$ROOT" ]] || continue
+    if [[ "$p" != /* || ! -d "$p/.orchestrator" ]]; then
+      log "ecouteur : ORCH_PROJETS : « $p » ignore (chemin absolu d'un projet orchestre attendu)"
+      continue
+    fi
+    printf '%s\n' "$p"
+  done
+}
+
 # traiter <corps> : 0 si la reponse a ete executee, 1 sinon (refus ou echec).
 traiter() {
   local corps="$1" tache reponse jeton
@@ -78,6 +98,25 @@ traiter() {
     return 1
   fi
   tache="${BASH_REMATCH[1]}"; reponse="${BASH_REMATCH[2]}"; jeton="${BASH_REMATCH[3]}"
+  # (2026-09-25, O36) Quel projet ? Celui dont une escalade porte CE jeton pour
+  # CETTE tache : le projet de l'ecouteur d'abord, puis ceux d'ORCH_PROJETS. Le
+  # jeton (128 bits, usage unique) suffit a les departager, meme quand deux
+  # projets ont une tache du meme numero. Trouve ailleurs : la suite de traiter()
+  # lit SES escalades et lance SON repondre.sh — d'ou les variables locales
+  # ci-dessous, qui masquent celles du projet de l'ecouteur pour cet appel seul
+  # (journal de l'ecouteur et confirmations inchanges). Tests MP1 a MP3.
+  local p esc_p trouve=0
+  while IFS= read -r p; do
+    if [[ "$p" == "$ROOT" ]]; then esc_p="$JOURNAL_ESC_T"; else esc_p="$p/.orchestrator/etat/escalades/escalades.jsonl"; fi
+    if jq -e --arg t "$tache" --arg j "$jeton" 'select(.tache == $t and .jeton == $j)' "$esc_p" >/dev/null 2>&1; then
+      trouve=1; break
+    fi
+  done < <(printf '%s\n' "$ROOT"; projets_declares)
+  if (( trouve == 1 )) && [[ "$p" != "$ROOT" ]]; then
+    local JOURNAL_ESC_T="$esc_p"
+    local -x ROOT="$p" ORCH_STATE="$p/.orchestrator"
+    log "ecouteur : $tache $reponse — jeton d'une escalade du projet $p"
+  fi
   # 2 et 3. Escalade ouverte de CETTE tache, avec CE jeton, non expiree.
   if ! jq -e --arg t "$tache" --arg j "$jeton" --arg now "$(date -u +%FT%TZ)" \
        'select(.tache == $t and .statut == "ouverte" and .jeton == $j and .expire_le > $now)' \
@@ -85,6 +124,19 @@ traiter() {
     journaliser refuse jeton "$corps"
     log "ecouteur : $tache $reponse refuse (jeton inconnu, deja utilise ou expire)"
     confirmer "Refuse : $tache $reponse (jeton inconnu, deja utilise ou escalade expiree)"
+    return 1
+  fi
+  # (2026-09-25, O34) Escalade dont le diff n'a pas pu etre montre en entier
+  # dans la notification (demandes d'ecriture trop longues) : l'approbation a
+  # distance est interdite — le bouton est retire, mais « Refuser » porte le
+  # meme jeton. L'escalade reste ouverte : approuver depuis le PC. Test EP4.
+  if [[ "$reponse" == approuver ]] \
+     && jq -e --arg t "$tache" --arg j "$jeton" \
+          'select(.tache == $t and .statut == "ouverte" and .jeton == $j and .approbation_distante == false)' \
+          "$JOURNAL_ESC_T" >/dev/null 2>&1; then
+    journaliser refuse approbation-distante "$corps"
+    log "ecouteur : $tache approuver refuse (diff non montre dans la notification — approuver depuis le PC)"
+    confirmer "Refuse : $tache approuver (diff trop long pour le telephone — lire les demandes et approuver depuis le PC)"
     return 1
   fi
   if RESPONSE_ORIGINE=ntfy "$ROOT/orchestrator/repondre.sh" "$tache" "$reponse" "via bouton ntfy" \

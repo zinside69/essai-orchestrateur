@@ -314,9 +314,15 @@ Expiration : $(heure_humaine "$expiration")
   # l'humain recevait un code (P11) sans savoir quoi faire.
   local detail
   detail="$(jq -r '.detail // empty' "$DECISION" 2>/dev/null || true)"
+  # (2026-09-25, O35) Libelle selon la raison : les demandes d'ecriture (P12) et
+  # la violation (P13) n'etaient pas la conclusion de l'agent. Ligne d'origine :
+  # AVANT : Conclusion de l'agent : $detail"
+  local libelle_detail="Conclusion de l'agent"
+  [[ "$raisons" == *"P12:"* ]] && libelle_detail="Demandes d'ecriture"
+  [[ "$raisons" == *"P13:"* ]] && libelle_detail="Violation de la doctrine d'ecriture"
   if [[ -n "$detail" ]]; then
     message="$message
-Conclusion de l'agent : $detail"
+$libelle_detail : $detail"
   fi
   # (2026-09-22, demande de l'operateur : « quelle action dois-je faire ? ») La
   # ligne a copier, avec le numero de la tache et la reponse adaptee : republier
@@ -341,6 +347,17 @@ Repondre : cd $ROOT && ./orchestrator/repondre.sh $TASK_ID $reponse"
 Suggestion du clone : $sugg_decision (regle $sugg_regle) — a confirmer, rien n'est applique"
     fi
   fi
+  # (2026-09-25, O34) Demande d'ecriture (P12) : « Approuver » fait ecrire le
+  # diff mot pour mot, il n'est donc propose a distance que si la notification
+  # montre TOUT le message. Au-dela de la limite ntfy (4 096 octets, marge
+  # gardee), seul « Refuser » reste : on approuve depuis le PC, apres lecture du
+  # fichier des demandes (l'e-mail L3 porte aussi le message entier). Test EP3.
+  local p12_illisible=0
+  if [[ "$raisons" == *"P12:"* ]] && (( $(printf '%s' "$message" | wc -c) > 4000 )); then
+    p12_illisible=1
+    message="$message
+Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json sur le PC avant d'approuver (repondre.sh). Refuser reste possible d'ici."
+  fi
   # (2026-09-22, reponse depuis le telephone) Boutons ntfy, seulement si le sujet
   # de REPONSE est configure (NTFY_TOPIC_REPONSE, opt-in) et hors L1. Jeton de
   # 128 bits a usage unique, range avec l'escalade : ecouteur.sh n'execute un
@@ -358,6 +375,10 @@ Suggestion du clone : $sugg_decision (regle $sugg_regle) — a confirmer, rien n
     # le bouton le dit. Test K13.
     elif [[ "$raisons" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
       ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver:Relancer refuser)"
+    # (2026-09-25, O34) Diff des demandes non montrable en entier : pas
+    # d'approbation a distance d'un texte non lu. Test EP3.
+    elif (( p12_illisible == 1 )); then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" refuser)"
     else
       ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver refuser)"
     fi
@@ -373,13 +394,17 @@ Suggestion du clone : $sugg_decision (regle $sugg_regle) — a confirmer, rien n
   # AVANT :     --arg exp "$expiration" --arg d "$defaut" --arg r "$raisons" --argjson rel "$relances" \
   # AVANT :     --arg j "$jeton" \
   # AVANT :      + (if $j == "" then {} else {jeton:$j} end)' >>"$JOURNAL_ESC_T"
+  # (2026-09-25, O34) Filtre avant l'interdiction d'approuver a distance, cite ici :
+  # AVANT :     --arg j "$jeton" --arg sr "$sugg_regle" --arg sd "$sugg_decision" \
+  # AVANT :      + (if $sr == "" then {} else {suggestion:{regle:$sr, decision:$sd}} end)' >>"$JOURNAL_ESC_T"
   jq -c -n --arg t "$TASK_ID" --arg n "$niveau" --arg ts "$(date -u +%FT%TZ)" \
     --arg exp "$expiration" --arg d "$defaut" --arg r "$raisons" --argjson rel "$relances" \
-    --arg j "$jeton" --arg sr "$sugg_regle" --arg sd "$sugg_decision" \
+    --arg j "$jeton" --arg sr "$sugg_regle" --arg sd "$sugg_decision" --arg il "$p12_illisible" \
     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
       relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}
      + (if $j == "" then {} else {jeton:$j} end)
-     + (if $sr == "" then {} else {suggestion:{regle:$sr, decision:$sd}} end)' >>"$JOURNAL_ESC_T"
+     + (if $sr == "" then {} else {suggestion:{regle:$sr, decision:$sd}} end)
+     + (if $il == "1" then {approbation_distante:false} else {} end)' >>"$JOURNAL_ESC_T"
 
   # AVANT : if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
   #   (2026-09-22, essai de publication GitHub, defaut 8) Toute escalade ouverte

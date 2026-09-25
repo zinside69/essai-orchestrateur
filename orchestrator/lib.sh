@@ -196,6 +196,18 @@ actions_ntfy() {
   printf '%s' "$sortie"
 }
 
+# escalade_demandes_ecriture <demandes.json>
+# (2026-09-25, O34) Decision P12 remise a escalade.sh pour les demandes
+# d'ecriture en attente : raison, et en detail chaque demande AVEC SON DIFF
+# EXACT — le texte que le harnais ecrira mot pour mot si l'humain approuve
+# (ADR 0002 : ce que l'humain a lu est ce qui est ecrit). Avant, le detail
+# s'arretait a la justification. Tests EP1 a EP3.
+escalade_demandes_ecriture() {
+  jq -c '{raisons: ["P12:demande-ecriture(\(length))"],
+          detail: (map("- \(.fichier) : \(.besoin // "") — justification : \(.justification // "aucune")\n  Diff exact (ecrit tel quel si approuve) :\n\(.diff // "(aucun)")") | join("\n"))}' \
+    "$1"
+}
+
 # curl_prive <url> [en-tete secret ...] -- [option curl ...]
 # (2026-09-23, defaut 46) Les arguments d'un processus se lisent dans `ps` par
 # tout processus du meme utilisateur — les agents lances par le socle compris.

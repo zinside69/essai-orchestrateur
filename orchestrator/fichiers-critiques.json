@@ -1,0 +1,51 @@
+{
+  "_commentaire": "ADR 0002 (2026-09-24) : fichiers qu'un agent n'ecrit jamais. Seul un humain les modifie ou en autorise la modification (demande d'ecriture). Lu dans le depot principal, jamais dans le worktree de l'agent ; ce fichier est lui-meme critique. Motifs : glob bash ou « * » traverse les dossiers (« ** » vaut « * ») ; « **/x » couvre aussi « x » a la racine. Un projet AJOUTE ses motifs dans « projet », sans retirer ceux du socle.",
+  "familles": {
+    "socle": [
+      "orchestrator/**",
+      ".claude/**",
+      ".githooks/**",
+      "todo.md"
+    ],
+    "constitution": [
+      "**/CLAUDE.md",
+      "**/AGENTS.md",
+      "CONTEXT.md",
+      "project-docs/decisions.md",
+      "docs/adr/**",
+      ".scratch/**"
+    ],
+    "configuration": [
+      "**/package.json",
+      "**/package-lock.json",
+      "**/pnpm-lock.yaml",
+      "**/yarn.lock",
+      "**/requirements*.txt",
+      "**/poetry.lock",
+      "**/go.mod",
+      "**/Cargo.toml",
+      "wrangler.jsonc",
+      "wrangler.toml",
+      "**/migrations/**",
+      ".github/**",
+      ".gitignore",
+      ".gitattributes",
+      "tsconfig*.json",
+      "vite.config.*",
+      "**/Dockerfile",
+      "**/docker-compose*.yml"
+    ],
+    "secrets": [
+      "**/.env",
+      "**/.env.*",
+      "**/.dev.vars",
+      "secrets/**",
+      "**/*.pem",
+      "**/*.p12",
+      "**/id_rsa*",
+      "**/credentials*.json",
+      "**/service-account*.json"
+    ]
+  },
+  "projet": []
+}

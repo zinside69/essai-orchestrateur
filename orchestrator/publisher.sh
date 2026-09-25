@@ -3,11 +3,23 @@
 set -Eeuo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
+# (2026-09-24, ADR 0002) Doctrine d'ecriture : fichiers critiques et perimetre.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/critiques.sh"
 
 TASK_ID="${1:?usage: publisher.sh T-NNN}"
 WT="${2:?chemin du worktree}"
 DECISION="$STATE_DIR/$TASK_ID.decision.json"
 BRANCH="$AGENT_BRANCH_PREFIX/$TASK_ID"
+
+# (2026-09-24, ADR 0002, verrou 3) Jamais publiable : une branche qui touche un
+# fichier critique ou hors perimetre, sans demande approuvee par un humain, ne
+# part pas — pas meme sur un verdict humain (PUBLICATION_VERDICT_HUMAIN). Controle
+# fait AVANT tout le reste, independamment de la decision : dernier verrou si un
+# autre chemin avait laisse passer la violation. Test EC4.
+FAUTIFS_PUB="$(cd "$WT" && fichiers_fautifs "$WT" "$(git merge-base "$INTEGRATION_BRANCH" HEAD)" HEAD \
+  "$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')" "$STATE_DIR/$TASK_ID.demandes-appliquees")"
+[[ -z "$FAUTIFS_PUB" ]] || die "publication refusee (ADR 0002) : fichier critique ou hors perimetre sans demande approuvee — $(tr '\n' ' ' <<<"$FAUTIFS_PUB")"
 
 require git gh jq
 

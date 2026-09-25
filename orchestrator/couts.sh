@@ -30,7 +30,9 @@ COUTS_J="$ORCH_DIR/journal/couts.jsonl"
 DEC="$ORCH_DIR/journal/decisions.jsonl"
 TACHES="$ORCH_DIR/etat/taches"
 M="$ROOT/orchestrator/matrice.json"
-DEPUIS="$(date -u -d "-${JOURS} days" +%FT%TZ)"
+# (2026-09-24) Meme date de reference que tableau-de-bord.sh (ORCH_AUJOURDHUI).
+# AVANT : DEPUIS="$(date -u -d "-${JOURS} days" +%FT%TZ)"
+DEPUIS="$(date -u -d "${ORCH_AUJOURDHUI:-now} -${JOURS} days" +%FT%TZ)"
 
 AGREGAT="$(python3 - "$COUTS_J" "$DEC" "$TACHES" "$M" "$DEPUIS" "$JOURS" <<'PY'
 import json, os, sys

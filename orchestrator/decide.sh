@@ -83,8 +83,24 @@ touche_motif() {
 
 # --- Règles d'arrêt : évaluées en premier --------------------------------
 # P1 — plafond de volume
+VERDICT_AVANT_P1="$VERDICT"
 if (( FILES > V_PLAF_F || LINES > V_PLAF_L )); then
   VERDICT="PARK"; RAISONS+=("P1:plafond-depasse(${FILES}f/${LINES}l)")
+fi
+# (2026-09-25, O38) Quota accepte par un humain aux controles (O29, ecrit par
+# « repondre.sh approuver », honore par gate.sh) : le plafond P1 porte sur le
+# meme depassement — ne pas le faire accepter une seconde fois. Seule
+# l'acceptation « quota » leve P1 (« risque » non). La suite de la matrice
+# s'applique : au-dela du volume de brouillon, jamais de fusion automatique.
+# Tests DQ1 a DQ3.
+if [[ "$VERDICT" == "PARK" && -f "$STATE_DIR/$TASK_ID.depassements-acceptes" ]] \
+   && grep -qx quota "$STATE_DIR/$TASK_ID.depassements-acceptes" \
+   && (( FILES > V_PLAF_F || LINES > V_PLAF_L )); then
+  RAISONS_SANS_P1=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == P1:plafond-depasse* ]] || RAISONS_SANS_P1+=("$r"); done
+  RAISONS=("${RAISONS_SANS_P1[@]+"${RAISONS_SANS_P1[@]}"}" "P1:plafond-accepte-humain(${FILES}f/${LINES}l)")
+  VERDICT="$VERDICT_AVANT_P1"
+  log "Plafond depasse (${FILES}f/${LINES}l) accepte par un humain pour ce travail"
 fi
 
 # P2 — chemin absolu (garde-fous)
