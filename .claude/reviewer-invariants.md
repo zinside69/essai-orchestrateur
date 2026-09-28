@@ -39,3 +39,9 @@ l'exerce, soit une modification dont l'effet est directement observable dans le 
 
 Un commentaire qui affirme que le travail est fait ne prouve rien. Un test qui ne peut pas
 échouer ne prouve rien. Une suppression ne prouve pas une implémentation.
+
+<!-- (2026-09-25, ADR 0003 R3, O41) Ajout. Test Z5. -->
+Un critère de **sûreté des données** (atomicité, reprise après échec partiel, double comptage,
+écrasement, course) n'est prouvé que si son test a été vu **rouge par mutation** : le compte rendu
+de l'auteur cite la mutation, le test et le rouge vu, ou une preuve `mutation` du harnais est
+soldée. Sans cette preuve, c'est un rejet **R2**.

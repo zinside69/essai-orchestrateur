@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # Interdit tout push depuis une branche d'agent, quel que soit l'appelant.
+# Depuis le 2026-09-27 (O15) : sauf publication par le harnais (ORCH_PUBLICATION_HARNAIS=1).
 set -Eeuo pipefail
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   # Branche source de type agent/*
-  if [[ "$local_ref" == refs/heads/agent/* ]]; then
+  # (2026-09-27, O15) Le harnais publie la branche d'agent (publisher.sh, seul
+  # chemin de publication du code) et le signale par ORCH_PUBLICATION_HARNAIS=1.
+  # Refuser « quel que soit l'appelant » bloquait toute publication des que
+  # core.hooksPath etait pose. Limite : un agent pourrait forger la variable ; la
+  # vraie barriere contre le push d'un agent reste le hook Claude guard-push. Le
+  # refus du non fast-forward, plus bas, vaut pour tous. Test HK1.
+  # AVANT : if [[ "$local_ref" == refs/heads/agent/* ]]; then
+  if [[ "$local_ref" == refs/heads/agent/* && "${ORCH_PUBLICATION_HARNAIS:-}" != 1 ]]; then
     echo "" >&2
     echo "[pre-push] REFUSÉ : push depuis '$local_ref'." >&2
     echo "[pre-push] Les branches agent/* sont locales par conception (Phase 1)." >&2
@@ -14,7 +22,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 
   # Push forcé vers n'importe quelle branche
-  if [[ "$remote_ref" == refs/heads/* && "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+  # (2026-09-27, O15, vu par HK1) Une branche NOUVELLE sur le remote arrive avec
+  # remote_sha = 40 zeros : « merge-base --is-ancestor 0000… » echouait et tout
+  # premier push d'une branche etait refuse comme « non fast-forward » — dont celui
+  # de publisher.sh. Le controle ne vaut que pour une branche qui existe deja.
+  # AVANT : if [[ "$remote_ref" == refs/heads/* && "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+  if [[ "$remote_ref" == refs/heads/* && "$local_sha" != "0000000000000000000000000000000000000000"         && "$remote_sha" != "0000000000000000000000000000000000000000" ]]; then
     if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
       echo "[pre-push] REFUSÉ : push non fast-forward vers '$remote_ref'." >&2
       exit 1
