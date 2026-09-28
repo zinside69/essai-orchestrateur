@@ -48,10 +48,17 @@ git -C "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
 # --- Prompt : diff + déclaration de tâche + invariants. Rien d'autre -------
 mapfile -t T < <(parse_task "$TASK_ID")
 
+# (2026-09-23, essai de bout en bout, O23) Le prompt ouvrait sur la ligne
+# AVANT : FICHIER DE DIFF : $DIFF
+# — un fichier que la politique interdit au relecteur — et ne donnait le diff
+# que plus bas, « pour information ». Deux entrees concurrentes : sur T-007 le
+# relecteur a suivi la premiere, l'a trouvee illisible et conclu desaccord sans
+# juger le code ; sur T-003 a T-006 il avait pris la seconde. Le verdict
+# dependait du modele. Une seule entree desormais, nommee opposable. Test W4.
 PROMPT="$(cat <<EOF
 Relis le diff ci-dessous contre la déclaration de tâche, puis produis ton jugement JSON.
 
-FICHIER DE DIFF : $DIFF
+DIFF : fourni intégralement plus bas, section « ENTREE OPPOSABLE — DIFF ».
 INVARIANTS OPPOSABLES : $WT/.claude/reviewer-invariants.md
 
 DÉCLARATION DE TÂCHE
@@ -72,12 +79,48 @@ EOF
 # « desaccord » faute d'entree. Une seule politique pour deux agents : le diff
 # passe donc par le prompt, borne par le quota de gate.sh (MAX_LINES). Le
 # fichier reste ecrit : trace, et controle V4 (diff non vide).
+# AVANT : CONTENU INTEGRAL DU DIFF (le fichier nomme plus haut ne t'est pas lisible : le voici)
+#   (2026-09-23, O23) remplacee par l'intitule ci-dessous : le diff du prompt est
+#   L'entree, pas un substitut d'un fichier illisible.
 PROMPT="$PROMPT
 
-CONTENU INTEGRAL DU DIFF (le fichier nomme plus haut ne t'est pas lisible : le voici)
+ENTREE OPPOSABLE — DIFF (c'est lui que tu juges ; aucun fichier de diff n'est à lire sur le disque)
 \`\`\`diff
 $(cat "$DIFF")
 \`\`\`"
+
+# --- Compte rendu de l'auteur (2026-09-24, ADR 0002, verrou 5) -------------
+# L'agent rend compte au valideur. Sur T-001 (iziGSM), son rapport (« E2E jamais
+# joues ») n'allait a personne. Le compte rendu est un ARTEFACT depose par
+# l'auteur et lu par le harnais, pas sa session : I2 tient. Il est une
+# declaration a verifier, jamais une entree opposable : seul le diff l'est. Les
+# modifications appliquees par le harnais sur decision humaine sont nommees, pour
+# que le relecteur ne les impute pas a l'agent. Tests EC7, EC9.
+CR_AUTEUR="$STATE_DIR/$TASK_ID.compte-rendu.json"
+if [[ -s "$CR_AUTEUR" ]]; then
+  CR_TEXTE="$(cat "$CR_AUTEUR")"
+else
+  CR_TEXTE='AUCUN COMPTE RENDU FOURNI PAR L AUTEUR — il devait en rendre un ; signale-le.'
+fi
+PROMPT="$PROMPT
+
+COMPTE RENDU DE L'AUTEUR — déclaration à VÉRIFIER contre le diff, point par point (critères,
+écarts, tests joués ou non, demandes). Elle n'est pas opposable : une affirmation que le diff
+ne confirme pas est un rejet.
+\`\`\`json
+$CR_TEXTE
+\`\`\`"
+if [[ -s "$STATE_DIR/$TASK_ID.demandes-appliquees" ]]; then
+  PROMPT="$PROMPT
+
+MODIFICATIONS APPLIQUEES PAR LE HARNAIS SUR DECISION HUMAINE (demandes d'écriture approuvées,
+texte appliqué tel quel ; ce n'est pas l'agent qui les a écrites) : $(cut -f1 "$STATE_DIR/$TASK_ID.demandes-appliquees" | sort -u | tr '\n' ' ')"
+fi
+if [[ "$(cat "$STATE_DIR/$TASK_ID.demandes.decision" 2>/dev/null || true)" == refusee ]]; then
+  PROMPT="$PROMPT
+
+DEMANDES D'ÉCRITURE REFUSÉES PAR L'HUMAIN : la tâche doit tenir sans elles."
+fi
 
 # --- Skill de revue (2026-09-21) --------------------------------------------
 # Designe par orchestrator/skills.json. L'outil Skill est autorise pour CE skill
@@ -108,6 +151,9 @@ claude -p "$PROMPT" \
   >"$STATE.reviewer.json" 2>"$STATE.reviewer.err"
 RC=$?
 set -e
+# (2026-09-22, defaut 7) Cout du relecteur au journal des couts, meme si sa
+# sortie est ensuite refusee (P4) : la depense a eu lieu.
+journaliser_cout "$TASK_ID" relecteur "$STATE.reviewer.json"
 
 [[ $RC -eq 0 ]] || isolation_invalide "reviewer en échec (code $RC)"
 

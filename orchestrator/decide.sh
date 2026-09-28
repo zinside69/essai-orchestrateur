@@ -83,8 +83,24 @@ touche_motif() {
 
 # --- Règles d'arrêt : évaluées en premier --------------------------------
 # P1 — plafond de volume
+VERDICT_AVANT_P1="$VERDICT"
 if (( FILES > V_PLAF_F || LINES > V_PLAF_L )); then
   VERDICT="PARK"; RAISONS+=("P1:plafond-depasse(${FILES}f/${LINES}l)")
+fi
+# (2026-09-25, O38) Quota accepte par un humain aux controles (O29, ecrit par
+# « repondre.sh approuver », honore par gate.sh) : le plafond P1 porte sur le
+# meme depassement — ne pas le faire accepter une seconde fois. Seule
+# l'acceptation « quota » leve P1 (« risque » non). La suite de la matrice
+# s'applique : au-dela du volume de brouillon, jamais de fusion automatique.
+# Tests DQ1 a DQ3.
+if [[ "$VERDICT" == "PARK" && -f "$STATE_DIR/$TASK_ID.depassements-acceptes" ]] \
+   && grep -qx quota "$STATE_DIR/$TASK_ID.depassements-acceptes" \
+   && (( FILES > V_PLAF_F || LINES > V_PLAF_L )); then
+  RAISONS_SANS_P1=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == P1:plafond-depasse* ]] || RAISONS_SANS_P1+=("$r"); done
+  RAISONS=("${RAISONS_SANS_P1[@]+"${RAISONS_SANS_P1[@]}"}" "P1:plafond-accepte-humain(${FILES}f/${LINES}l)")
+  VERDICT="$VERDICT_AVANT_P1"
+  log "Plafond depasse (${FILES}f/${LINES}l) accepte par un humain pour ce travail"
 fi
 
 # P2 — chemin absolu (garde-fous)
@@ -176,6 +192,22 @@ if [[ "$VERDICT" == "AUTO_MERGE" ]] \
    && jq -e '[.rejets[]? | select(.code == "R2")] | length > 0' "$REVUE" >/dev/null 2>&1; then
   VERDICT="PR_READY"
   RAISONS+=("Q1:critere-non-prouve(R2)-fusion-automatique-refusee")
+fi
+
+# --- Q3 — tests jamais vus rouges : jamais de fusion automatique ---------
+# (2026-09-22) Meme esprit que Q1, mais sur une MESURE du harnais et non sur un
+# jugement du relecteur : test-rouge.sh a rejoue les tests de l'agent sur
+# l'integration, sans son code. S'ils y passent aussi, ou s'il n'y en a pas, ou
+# si la mesure a echoue, rien ne prouve le correctif : AUTO_MERGE est ramene a
+# PR_READY. Non configure (pas de test_rouge dans gates.json) : rien ne change.
+# Tests A1 a A4.
+TEST_ROUGE="$(jq -r '.statut // empty' "$STATE_DIR/$TASK_ID.test-rouge.json" 2>/dev/null || true)"
+if [[ "$VERDICT" == "AUTO_MERGE" ]]; then
+  case "$TEST_ROUGE" in
+    jamais-rouge) VERDICT="PR_READY"; RAISONS+=("Q3:test-jamais-vu-rouge-fusion-automatique-refusee") ;;
+    aucun-test)   VERDICT="PR_READY"; RAISONS+=("Q3:aucun-test-fusion-automatique-refusee") ;;
+    erreur)       VERDICT="PR_READY"; RAISONS+=("Q3:preuve-rouge-impossible-fusion-automatique-refusee") ;;
+  esac
 fi
 
 # --- M4 / défaut : fail-safe --------------------------------------------

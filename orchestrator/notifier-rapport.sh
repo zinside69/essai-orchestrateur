@@ -42,7 +42,10 @@ fi
 
 printf '%s\tL1\tRAPPORT\t%s\n' "$(date -u +%FT%TZ)" "$RAPPORT" >>"$ORCH_DIR/journal/digest.tsv"
 if [[ -n "${NTFY_TOPIC:-}" ]]; then
-  curl -sS -H "Title: $OBJET" -H "Priority: default" -H "Tags: chart_with_upwards_trend" \
-    -d "$EXTRAIT" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || true
+  # AVANT :   curl -sS -H "Title: $OBJET" -H "Priority: default" -H "Tags: chart_with_upwards_trend" \
+  # AVANT :     -d "$EXTRAIT" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || true
+  #   (2026-09-23, defaut 46) le sujet d'alerte se lisait dans `ps` : URL par curl_prive. Test K10.
+  curl_prive "https://ntfy.sh/${NTFY_TOPIC}" -- -sS -H "Title: $OBJET" -H "Priority: default" \
+    -H "Tags: chart_with_upwards_trend" -d "$EXTRAIT" >/dev/null || true
 fi
 log "Rapport diffuse : $RAPPORT"

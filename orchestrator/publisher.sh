@@ -3,15 +3,38 @@
 set -Eeuo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
+# (2026-09-24, ADR 0002) Doctrine d'ecriture : fichiers critiques et perimetre.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/critiques.sh"
 
 TASK_ID="${1:?usage: publisher.sh T-NNN}"
 WT="${2:?chemin du worktree}"
 DECISION="$STATE_DIR/$TASK_ID.decision.json"
 BRANCH="$AGENT_BRANCH_PREFIX/$TASK_ID"
 
+# (2026-09-24, ADR 0002, verrou 3) Jamais publiable : une branche qui touche un
+# fichier critique ou hors perimetre, sans demande approuvee par un humain, ne
+# part pas — pas meme sur un verdict humain (PUBLICATION_VERDICT_HUMAIN). Controle
+# fait AVANT tout le reste, independamment de la decision : dernier verrou si un
+# autre chemin avait laisse passer la violation. Test EC4.
+FAUTIFS_PUB="$(cd "$WT" && fichiers_fautifs "$WT" "$(git merge-base "$INTEGRATION_BRANCH" HEAD)" HEAD \
+  "$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')" "$STATE_DIR/$TASK_ID.demandes-appliquees")"
+[[ -z "$FAUTIFS_PUB" ]] || die "publication refusee (ADR 0002) : fichier critique ou hors perimetre sans demande approuvee — $(tr '\n' ' ' <<<"$FAUTIFS_PUB")"
+
 require git gh jq
 
-VERDICT="$(jq -r '.verdict' "$DECISION")"
+# AVANT : VERDICT="$(jq -r '.verdict' "$DECISION")"
+#   (2026-09-23, O22) Une escalade approuvee par un humain alors que le travail
+#   est pret se publie en PR A RELIRE (decision de l'operateur : jamais de fusion
+#   automatique sur approbation). repondre.sh pose PUBLICATION_VERDICT_HUMAIN ;
+#   seule la valeur PR_READY est admise, toute autre arrete la publication.
+if [[ -n "${PUBLICATION_VERDICT_HUMAIN:-}" ]]; then
+  [[ "$PUBLICATION_VERDICT_HUMAIN" == PR_READY ]] \
+    || die "verdict humain refuse : $PUBLICATION_VERDICT_HUMAIN (seul PR_READY est admis)"
+  VERDICT="$PUBLICATION_VERDICT_HUMAIN"
+else
+  VERDICT="$(jq -r '.verdict' "$DECISION")"
+fi
 REVUE="$(jq -r  '.axe_d_revue.verdict'  "$DECISION")"
 RISQUE="$(jq -r '.axe_c_risque'         "$DECISION")"
 CONF="$(jq -r   '.axe_d_revue.confiance' "$DECISION")"

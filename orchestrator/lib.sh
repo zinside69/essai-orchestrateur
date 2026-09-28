@@ -21,7 +21,12 @@ STATE_DIR="$ORCH_DIR/state"
 INTEGRATION_BRANCH="${INTEGRATION_BRANCH:-integration}"
 # shellcheck disable=SC2034
 AGENT_BRANCH_PREFIX="agent"
-WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt}"
+# AVANT : WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt}"
+#   (2026-09-22, essai de publication, defaut 1) Deux projets ranges dans le meme
+#   dossier se disputaient wt/T-001 — tout projet a une T-001 : le projet d'essai
+#   a bute sur le worktree du bac a sable iziGSM. Un sous-dossier par projet.
+#   Les worktrees deja crees a l'ancien endroit n'y sont pas deplaces. Test P4.
+WORKTREE_ROOT="${WORKTREE_ROOT:-$(dirname "$ROOT")/wt/$(basename "$ROOT")}"
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -130,4 +135,137 @@ transition_etat() {
     '{ts_utc:$ts,tache:$t,de:$de,vers:$vers,appelant:$a,mode:$m}' \
     >>"$ORCH_DIR/journal/transitions.jsonl"
   return 0
+}
+
+# journaliser_cout <T-NNN> <auteur|relecteur> <sortie de claude>
+# (2026-09-22, essai de publication, defaut 7) Une ligne par appel a claude dans
+# journal/couts.jsonl, ecrite juste apres l'appel, que la suite reussisse ou non :
+# une tache ratee avant toute decision a quand meme depense. Lit la derniere ligne
+# « result » (stream-json de l'auteur ou json du relecteur) ; les lignes qui ne
+# sont pas du JSON (stderr melange au flux) sont ignorees. Sans ligne result
+# (agent coupe) : « mesure absente », cout 0 — un trou visible, pas un oubli.
+# Le cout est celui calcule par Claude Code (base « list » = tarif public, ce
+# n'est pas ce qui est facture sous abonnement). Tests N1 a N3.
+journaliser_cout() {
+  local tache="$1" role="$2" src="$3" ligne=""
+  mkdir -p "$ORCH_DIR/journal"
+  if [[ -f "$src" ]]; then
+    ligne="$(jq -cRn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" '
+      ([inputs | fromjson? | objects | select(.type == "result")] | last) as $res
+      | if $res == null then
+          {ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}
+        else
+          {ts:$ts, tache:$t, role:$r, mesure:"ok",
+           cout_usd: ($res.total_cost_usd // 0),
+           tours: ($res.num_turns // 0),
+           duree_ms: ($res.duration_ms // 0),
+           tokens: {entree: ($res.usage.input_tokens // 0),
+                    cache_lu: ($res.usage.cache_read_input_tokens // 0),
+                    cache_ecrit: ($res.usage.cache_creation_input_tokens // 0),
+                    sortie: ($res.usage.output_tokens // 0),
+                    reflexion: ($res.usage.output_tokens_details.thinking_tokens // 0)},
+           modeles: (($res.modelUsage // {}) | keys),
+           base: ([($res.modelUsage // {})[] | .costBasis? // empty] | unique | join(","))}
+        end' "$src" 2>/dev/null)" || ligne=""
+  fi
+  [[ -n "$ligne" ]] || ligne="$(jq -cn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" \
+    '{ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}')"
+  printf '%s\n' "$ligne" >>"$ORCH_DIR/journal/couts.jsonl"
+}
+
+# actions_ntfy <T-NNN> <jeton> <sujet de reponse> <reponse>...
+# (2026-09-22, reponse depuis le telephone) En-tete « Actions » de ntfy : un
+# bouton par reponse. Appuyer publie « T-NNN <reponse> <jeton> » sur le sujet de
+# REPONSE, que lit ecouteur.sh. Pas de virgule ni de point-virgule dans le
+# corps : ce sont les separateurs de l'en-tete. Test K7.
+# (2026-09-23, O22) Une reponse peut porter son libelle : « approuver:Relancer »
+# affiche « Relancer » et envoie « approuver ». Sans « : », libelle = reponse
+# capitalisee (comportement d'avant). Tests K7, K13.
+actions_ntfy() {
+  # AVANT :   local tache="$1" jeton="$2" sujet="$3" r sortie="" sep=""
+  local tache="$1" jeton="$2" sujet="$3" r rep lib sortie="" sep=""
+  shift 3
+  for r in "$@"; do
+    rep="${r%%:*}"
+    lib="${r#*:}"
+    [[ "$r" == *:* ]] || lib="${rep^}"
+    # AVANT :     sortie+="${sep}http, ${r^}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${r} ${jeton}, clear=true"
+    sortie+="${sep}http, ${lib}, https://ntfy.sh/${sujet}, method=POST, body=${tache} ${rep} ${jeton}, clear=true"
+    sep="; "
+  done
+  printf '%s' "$sortie"
+}
+
+# escalade_demandes_ecriture <demandes.json>
+# (2026-09-25, O34) Decision P12 remise a escalade.sh pour les demandes
+# d'ecriture en attente : raison, et en detail chaque demande AVEC SON DIFF
+# EXACT — le texte que le harnais ecrira mot pour mot si l'humain approuve
+# (ADR 0002 : ce que l'humain a lu est ce qui est ecrit). Avant, le detail
+# s'arretait a la justification. Tests EP1 a EP3.
+escalade_demandes_ecriture() {
+  jq -c '{raisons: ["P12:demande-ecriture(\(length))"],
+          detail: (map("- \(.fichier) : \(.besoin // "") — justification : \(.justification // "aucune")\n  Diff exact (ecrit tel quel si approuve) :\n\(.diff // "(aucun)")") | join("\n"))}' \
+    "$1"
+}
+
+# curl_prive <url> [en-tete secret ...] -- [option curl ...]
+# (2026-09-23, defaut 46) Les arguments d'un processus se lisent dans `ps` par
+# tout processus du meme utilisateur — les agents lances par le socle compris.
+# Or l'URL ntfy porte le NOM du sujet, qui est le secret (sujet d'alerte : il
+# transporte les jetons des boutons ; sujet de reponse), et l'en-tete Actions
+# porte le jeton. URL et en-tetes secrets passent donc par un fichier de
+# configuration curl en 600, efface apres l'appel — meme regle que la cle Brevo
+# (escalade.sh, envoyer_email). Les options apres « -- » restent en argument :
+# elles ne doivent rien contenir de secret. Rend le code de curl. Tests K9, B6.
+curl_prive() {
+  local cfg rc=0
+  cfg="$(mktemp)"
+  chmod 600 "$cfg"
+  {
+    printf 'url = "%s"\n' "$(echapper_config_curl "$1")"
+    shift
+    while [[ $# -gt 0 && "$1" != -- ]]; do
+      printf 'header = "%s"\n' "$(echapper_config_curl "$1")"
+      shift
+    done
+  } >"$cfg"
+  [[ "${1:-}" == -- ]] && shift
+  curl -K "$cfg" "$@" || rc=$?
+  rm -f "$cfg"
+  return "$rc"
+}
+
+# sous_verrou_depot <commande...>
+# (2026-09-23, essai de bout en bout, defaut 50) Deux taches lancees dans la meme
+# seconde ecrivent dans les fichiers PARTAGES du depot (.git/config, FETCH_HEAD,
+# references distantes) : git les protege par un verrou qui ECHOUE au lieu
+# d'attendre (« could not lock config file ») — T-003 est tombee ainsi. Ici les
+# ecritures partagees du harnais passent une par une, sous un verrou commun a
+# tous les worktrees (git-common-dir). mkdir est atomique et portable : ni
+# flock (absent de macOS), ni dependance nouvelle. Attente bornee a 120 s, puis
+# echec explicite (code 75) plutot qu'une attente sans fin sur un verrou
+# abandonne. Rend le code de la commande. Tests P6, P7.
+sous_verrou_depot() {
+  local verrou i=0 rc=0
+  verrou="$(git rev-parse --git-common-dir)/orchestrateur.verrou"
+  until mkdir "$verrou" 2>/dev/null; do
+    if (( i >= 1200 )); then
+      log "verrou du depot occupe depuis 120 s : $verrou (le supprimer s'il est abandonne)"
+      return 75
+    fi
+    i=$((i + 1))
+    sleep 0.1
+  done
+  "$@" || rc=$?
+  rmdir "$verrou" 2>/dev/null || true
+  return "$rc"
+}
+
+# Valeur entre guillemets d'un fichier de configuration curl : \ et " echappes.
+# Caracteres nommes plutot qu'ecrits echappes : lisible, et sans piege de citation.
+echapper_config_curl() {
+  # shellcheck disable=SC1003  # '\' est bien une barre oblique inverse seule, pas un guillemet echappe
+  local bs='\' dq='"' v
+  v="${1//"$bs"/"$bs$bs"}"
+  printf '%s' "${v//"$dq"/"$bs$dq"}"
 }

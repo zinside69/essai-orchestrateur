@@ -7,7 +7,10 @@ set -Eeuo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
 
-E="$ROOT/orchestrator/escalade.json"
+# (2026-09-23, O24) Chemin surchargeable : un test pose sa politique dans un dossier
+# jetable au lieu de reecrire le vrai escalade.json le temps du test.
+# AVANT : E="$ROOT/orchestrator/escalade.json"
+E="${ORCH_ESCALADE:-$ROOT/orchestrator/escalade.json}"
 ETAT_DIR="$ORCH_DIR/etat"
 STATE_DIR="${STATE_DIR:-$ORCH_DIR/state}"
 ESC_DIR="$ETAT_DIR/escalades"
@@ -201,8 +204,34 @@ notifier() {
       push|push_prioritaire)
         prio="default"
         [[ "$c" == "push_prioritaire" ]] && prio="high"
-        curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" \
-          -d "$message" "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" >/dev/null 2>&1 || rc=$? ;;
+        # (2026-09-22) Boutons de reponse (ACTIONS_NTFY, pose par ouvrir_escalade)
+        # quand il y en a. Ligne d'origine, avant l'en-tete « Actions » :
+        # AVANT :         curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" \
+        # AVANT :         local boutons=()
+        # AVANT :         [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=(-H "Actions: $ACTIONS_NTFY")
+        # AVANT :         curl -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" "${boutons[@]}" \
+        # AVANT :           -d "$message" "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" >/dev/null 2>&1 || rc=$? ;;
+        #   (2026-09-23, defaut 46) le sujet d'alerte (URL) et le jeton (en-tete
+        #   Actions) se lisaient dans `ps` le temps de l'appel : tous deux passent
+        #   par curl_prive (fichier -K en 600). Le message reste en argument : il ne
+        #   contient ni sujet ni jeton. Test K9.
+        local boutons=()
+        [[ -n "${ACTIONS_NTFY:-}" ]] && boutons=("Actions: $ACTIONS_NTFY")
+        # AVANT :         curl_prive "https://ntfy.sh/$(lire_var_env NTFY_TOPIC || printf %s mon-projet-agents)" "${boutons[@]}" -- \
+        # AVANT :           -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" -d "$message" >/dev/null 2>&1 || rc=$? ;;
+        #   (2026-09-23, O19) sans NTFY_TOPIC, repli sur « mon-projet-agents » : un
+        #   sujet public au nom generique, ou toute alerte partait, lisible par qui
+        #   s'y abonne. Plus de repli : le canal echoue (68), journalise et compte
+        #   par M17, sans aucun appel reseau. Test K11.
+        local sujet_alerte
+        sujet_alerte="$(lire_var_env NTFY_TOPIC)" || sujet_alerte=""
+        if [[ -z "$sujet_alerte" ]]; then
+          log "[NOTIF] $c : NTFY_TOPIC non configure ($ORCHESTRATEUR_ENV), rien envoye"
+          rc=68
+        else
+          curl_prive "https://ntfy.sh/$sujet_alerte" "${boutons[@]}" -- \
+            -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" -d "$message" >/dev/null 2>&1 || rc=$?
+        fi ;;
       github_issue)
         gh issue create --title "[$niveau] $tache — decision requise" \
           --body "$message" --label "agent,escalade-$niveau" >/dev/null 2>&1 || rc=$? ;;
@@ -280,14 +309,111 @@ Raisons : $raisons
 Defaut si pas de reponse : $defaut
 Expiration : $(heure_humaine "$expiration")
              $expiration"
+  # (2026-09-22, defaut 12) Detail facultatif de la decision : la conclusion de
+  # l'agent pour une tache RED (« fusionner T-001 dans integration »). Sans elle,
+  # l'humain recevait un code (P11) sans savoir quoi faire.
+  local detail
+  detail="$(jq -r '.detail // empty' "$DECISION" 2>/dev/null || true)"
+  # (2026-09-25, O35) Libelle selon la raison : les demandes d'ecriture (P12) et
+  # la violation (P13) n'etaient pas la conclusion de l'agent. Ligne d'origine :
+  # AVANT : Conclusion de l'agent : $detail"
+  local libelle_detail="Conclusion de l'agent"
+  [[ "$raisons" == *"P12:"* ]] && libelle_detail="Demandes d'ecriture"
+  [[ "$raisons" == *"P13:"* ]] && libelle_detail="Violation de la doctrine d'ecriture"
+  if [[ -n "$detail" ]]; then
+    message="$message
+$libelle_detail : $detail"
+  fi
+  # (2026-09-22, demande de l'operateur : « quelle action dois-je faire ? ») La
+  # ligne a copier, avec le numero de la tache et la reponse adaptee : republier
+  # apres une publication ratee (P9), le choix des quatre reponses sinon. Rien
+  # pour L1 : une information n'attend pas de reponse. Test K6.
+  if [[ "$niveau" != "L1" ]]; then
+    local reponse="<approuver|refuser|modifier|reporter>"
+    [[ "$raisons" == *"P9:"* ]] && reponse="republier"
+    message="$message
+Repondre : cd $ROOT && ./orchestrator/repondre.sh $TASK_ID $reponse"
+  fi
+  # (2026-09-23, O25, decision de l'operateur) Le clone decisionnel SUGGERE, il ne
+  # repond pas : si une regle de l'answer-book couvre ces raisons, l'alerte le dit
+  # et l'escalade garde la suggestion (a comparer plus tard a la reponse humaine).
+  # L'humain decide toujours. Rien pour L1 ni L4 (answer.sh refuse L4). Tests K17, K18.
+  local suggestion="" sugg_regle="" sugg_decision=""
+  if [[ "$niveau" != "L1" ]]; then
+    suggestion="$("$ROOT/orchestrator/answer.sh" --suggerer "$TASK_ID" "$raisons" "$niveau" 2>/dev/null || true)"
+    read -r sugg_regle sugg_decision <<<"$suggestion" || true
+    if [[ -n "$sugg_regle" && -n "$sugg_decision" ]]; then
+      message="$message
+Suggestion du clone : $sugg_decision (regle $sugg_regle) — a confirmer, rien n'est applique"
+    fi
+  fi
+  # (2026-09-25, O34) Demande d'ecriture (P12) : « Approuver » fait ecrire le
+  # diff mot pour mot, il n'est donc propose a distance que si la notification
+  # montre TOUT le message. Au-dela de la limite ntfy (4 096 octets, marge
+  # gardee), seul « Refuser » reste : on approuve depuis le PC, apres lecture du
+  # fichier des demandes (l'e-mail L3 porte aussi le message entier). Test EP3.
+  local p12_illisible=0
+  if [[ "$raisons" == *"P12:"* ]] && (( $(printf '%s' "$message" | wc -c) > 4000 )); then
+    p12_illisible=1
+    message="$message
+Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json sur le PC avant d'approuver (repondre.sh). Refuser reste possible d'ici."
+  fi
+  # (2026-09-22, reponse depuis le telephone) Boutons ntfy, seulement si le sujet
+  # de REPONSE est configure (NTFY_TOPIC_REPONSE, opt-in) et hors L1. Jeton de
+  # 128 bits a usage unique, range avec l'escalade : ecouteur.sh n'execute un
+  # bouton que s'il porte le jeton d'une escalade ouverte et non expiree de cette
+  # tache. Qui lit la notification peut appuyer : le secret est le nom du sujet.
+  # Les relances n'ont pas de boutons. Tests K7, K8, B1 a B5.
+  local jeton="" sujet_rep=""
+  ACTIONS_NTFY=""
+  if [[ "$niveau" != "L1" ]] && sujet_rep="$(lire_var_env NTFY_TOPIC_REPONSE)"; then
+    jeton="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    if [[ "$raisons" == *"P9:"* ]]; then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" republier reporter)"
+    # (2026-09-23, O22, decision de l'operateur) Sans travail pret — panne P10,
+    # controles rouges P11, preuve manquante P8 — « approuver » relance la tache :
+    # le bouton le dit. Test K13.
+    elif [[ "$raisons" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver:Relancer refuser)"
+    # (2026-09-25, O34) Diff des demandes non montrable en entier : pas
+    # d'approbation a distance d'un texte non lu. Test EP3.
+    elif (( p12_illisible == 1 )); then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" refuser)"
+    else
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver refuser)"
+    fi
+  fi
   notifier "$niveau" "$TASK_ID" "$message"
 
+  # (2026-09-22) Filtre d'origine cite ici (lignes continuees ci-dessous), avant
+  # l'ajout du jeton :
+  # AVANT :     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
+  # AVANT :       relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}' >>"$JOURNAL_ESC_T"
+  # (2026-09-23, O25) Filtre avant la suggestion du clone, cite ici :
+  # AVANT :   jq -c -n --arg t "$TASK_ID" --arg n "$niveau" --arg ts "$(date -u +%FT%TZ)" \
+  # AVANT :     --arg exp "$expiration" --arg d "$defaut" --arg r "$raisons" --argjson rel "$relances" \
+  # AVANT :     --arg j "$jeton" \
+  # AVANT :      + (if $j == "" then {} else {jeton:$j} end)' >>"$JOURNAL_ESC_T"
+  # (2026-09-25, O34) Filtre avant l'interdiction d'approuver a distance, cite ici :
+  # AVANT :     --arg j "$jeton" --arg sr "$sugg_regle" --arg sd "$sugg_decision" \
+  # AVANT :      + (if $sr == "" then {} else {suggestion:{regle:$sr, decision:$sd}} end)' >>"$JOURNAL_ESC_T"
   jq -c -n --arg t "$TASK_ID" --arg n "$niveau" --arg ts "$(date -u +%FT%TZ)" \
     --arg exp "$expiration" --arg d "$defaut" --arg r "$raisons" --argjson rel "$relances" \
+    --arg j "$jeton" --arg sr "$sugg_regle" --arg sd "$sugg_decision" --arg il "$p12_illisible" \
     '{tache:$t, niveau:$n, ouvert_le:$ts, expire_le:$exp, relances_prevues:$rel,
-      relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}' >>"$JOURNAL_ESC_T"
+      relances_envoyees:0, defaut:$d, raisons:$r, statut:"ouverte"}
+     + (if $j == "" then {} else {jeton:$j} end)
+     + (if $sr == "" then {} else {suggestion:{regle:$sr, decision:$sd}} end)
+     + (if $il == "1" then {approbation_distante:false} else {} end)' >>"$JOURNAL_ESC_T"
 
-  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
+  # AVANT : if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 ]]; then
+  #   (2026-09-22, essai de publication GitHub, defaut 8) Toute escalade ouverte
+  #   mettait la tache en PARKED — y compris L1, simple information qui suit un
+  #   AUTO_MERGE reussi (defaut « archiver »). Une tache publiee finissait donc
+  #   PARKED au lieu de PUBLISHED : reconcile.sh ne la passait jamais DONE et ses
+  #   dependantes ne partaient jamais. L1 n'attend aucune reponse : elle ne
+  #   suspend rien. Test Y2.
+  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 && "$niveau" != "L1" ]]; then
     python3 - "$ETAT_DIR/taches/$TASK_ID.env" <<'PY'
 import sys
 p=sys.argv[1]
@@ -307,6 +433,14 @@ verifier_expirations() {
   local maintenant max_l4 fenetre n_l4
   maintenant="$(date -u +%s)"
   [[ -f "$JOURNAL_ESC_T" ]] || { log "Aucune escalade ouverte"; return 0; }
+  # (2026-09-23) La boucle lit un INSTANTANE : update_escalade_status reecrit
+  # escalades.jsonl en cours de lecture, et la lecture suivante tombait au milieu
+  # du nouveau contenu (jq en erreur, sortie rc=5 sous set -e). Des la premiere
+  # escalade modifiee, les suivantes n'etaient jamais traitees et le disjoncteur
+  # L4, en fin de fonction, jamais evalue.
+  local instantane
+  instantane="$(mktemp)"
+  cp "$JOURNAL_ESC_T" "$instantane"
 
   while IFS= read -r ligne; do
     local statut tache niveau expire ouvert ts_exp ts_ouv ecoule_h defaut quarantaine
@@ -316,6 +450,22 @@ verifier_expirations() {
     niveau="$(jq -r '.niveau' <<<"$ligne")"
     expire="$(jq -r '.expire_le' <<<"$ligne")"
     ouvert="$(jq -r '.ouvert_le' <<<"$ligne")"
+
+    # (2026-09-23, O20) Une tache terminee (DONE) ou publiee (PUBLISHED) ne se
+    # touche plus : l'escalade restee ouverte passe « sans_objet », sans relance,
+    # sans BLOCKED, sans quarantaine ni alerte L4. Avant, l'expiration forcait
+    # etat=BLOCKED quel que soit l'etat : T-001 du projet d'essai serait passee de
+    # DONE a BLOCKED, sa branche renommee en quarantine/.
+    local etat_tache=""
+    [[ -f "$ETAT_DIR/taches/$tache.env" ]] && \
+      etat_tache="$(sed -n 's/^etat=//p' "$ETAT_DIR/taches/$tache.env" | head -1)"
+    if [[ "$etat_tache" == "DONE" || "$etat_tache" == "PUBLISHED" ]]; then
+      # Trace = le statut dans escalades.jsonl ; rien dans refus.jsonl, qui
+      # alimente M08 (taux de refus) : une escalade sans objet n'est pas un refus.
+      (( DRY_RUN == 1 )) || update_escalade_status "$tache" "sans_objet"
+      log "$niveau $tache : escalade sans objet (tache $etat_tache), ni relance ni expiration"
+      continue
+    fi
 
     ts_exp="$(date -u -d "$expire" +%s 2>/dev/null || echo 0)"
     ts_ouv="$(date -u -d "$ouvert" +%s 2>/dev/null || echo 0)"
@@ -372,7 +522,9 @@ PY
           log "$niveau $tache : EXPIRATION — $defaut. Etat BLOCKED." ;;
       esac
     fi
-  done <"$JOURNAL_ESC_T"
+  # AVANT :   done <"$JOURNAL_ESC_T"
+  done <"$instantane"
+  rm -f "$instantane"
 
   max_l4="$(jq -r '.disjoncteur.max_l4_non_resolues' "$E")"
   fenetre="$(jq -r '.disjoncteur.fenetre_l4_heures' "$E")"

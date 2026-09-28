@@ -31,11 +31,13 @@
       "quarantaine": true
     }
   },
+  "_commentaire_derivation": "2026-09-24 (ADR 0002) : P12 (demande d'ecriture d'un agent, decision humaine) en L3 ; P13 (fichier critique ou hors perimetre ecrit malgre tout) en L4 — quarantaine, clone exclu. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\"] et \"L4\": [\"P2:*\", \"P3:*\", \"P5:*\"].",
+  "_commentaire_derivation_p14": "2026-09-24 (defaut 68) : P14 (agent arrete sans code, decision requise) en L3. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\", \"P12:*\"].",
   "derivation": {
     "L1": ["M1:*", "M2:*"],
     "L2": ["M3:desaccord-reviewer"],
-    "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*"],
-    "L4": ["P2:*", "P3:*", "P5:*"]
+    "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*", "P12:*", "P14:*"],
+    "L4": ["P2:*", "P3:*", "P5:*", "P13:*"]
   },
   "disjoncteur": {
     "max_l4_non_resolues": 3,
