@@ -230,6 +230,17 @@ run_once() {
 
   for t in "${RETENUES[@]:-}"; do
     [[ -z "$t" ]] && continue
+    # (2026-09-27, O12) Un essai a blanc n'ecrit aucune trace d'execution. La
+    # transition READY -> RUNNING etait ecrite avant le test DRY_RUN plus bas : le
+    # journal gardait un lancement qui n'avait pas eu lieu, la fiche restait
+    # RUNNING sans pipeline. On annonce et on passe, avant fiche, memoire et
+    # transition. Le test DRY_RUN plus bas n'est plus atteint en --dry-run ; il
+    # reste en place (regle additive). La recompilation du graphe (cache derive
+    # de todo.md) a toujours lieu. Test SD1.
+    if (( DRY_RUN == 1 )); then
+      printf '[DRY-RUN scheduler] pipeline.sh %s\n' "$t"
+      continue
+    fi
     ensure_env_file "$t"
     inject_memoire "$t"
     # Transition gardee READY -> RUNNING (Phase 5 / P3-a)

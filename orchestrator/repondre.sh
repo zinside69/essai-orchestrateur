@@ -132,7 +132,11 @@ if [[ "$DECISION_H" == "approuver" ]]; then
   RAISONS_OUVERTES="$(jq -r --arg t "$TASK_ID" 'select(.tache == $t and .statut == "ouverte") | .raisons' \
     "$JOURNAL_ESC_T" 2>/dev/null | tail -1 || true)"
   COMMITS_AGENT="$(git -C "$ROOT" rev-list "$INTEGRATION_BRANCH..$AGENT_BRANCH_PREFIX/$TASK_ID" 2>/dev/null || true)"
-  if [[ "$RAISONS_OUVERTES" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
+  # AVANT :   if [[ "$RAISONS_OUVERTES" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
+  #   (2026-09-27, O45) P14 (agent arrete ou coupe) relance aussi : un agent
+  #   coupe par max_turns laisse un travail PARTIEL commite, qu'« approuver »
+  #   aurait publie sans controles ni revue. Test MT2.
+  if [[ "$RAISONS_OUVERTES" =~ (^|[^A-Z0-9])P(8|10|11|14): ]]; then
     MODE_APPROUVER="relancer"
   elif [[ -d "$WT_T" && -n "$COMMITS_AGENT" ]]; then
     MODE_APPROUVER="publier"
@@ -157,6 +161,28 @@ if [[ "$DECISION_H" == approuver ]] && (( VIOLATION == 0 && DEMANDE_OUV == 0 )) 
    && [[ "$RAISONS_OUV" == *quota:depasse* || "$RAISONS_OUV" == *politique:decision-humaine-Q3* ]]; then
   MODE_APPROUVER="controles"
   CIBLE="READY"
+fi
+
+# (2026-09-25, ADR 0003 R1) Conception en doute (P15) : aucun travail d'agent
+# n'existe encore. « approuver » = l'humain a amende le ticket : relance, et la
+# relecture de conception REPASSE (conception.sh ne garde jamais un doute).
+# « modifier "consigne" » = l'humain passe outre : marque liee a l'empreinte de
+# la declaration (plus bas), la consigne part a l'agent. Tests CO3, CO4.
+CONCEPTION_OUV=0; [[ "$RAISONS_OUV" == *P15:* ]] && CONCEPTION_OUV=1
+if [[ "$DECISION_H" == approuver ]] && (( CONCEPTION_OUV == 1 )); then
+  MODE_APPROUVER="relancer"
+  CIBLE="READY"
+fi
+# (2026-09-25, ADR 0003 R3, O40) Preuve a fournir (P16) : la tache est publiee,
+# mise en pause par l'escalade de sa decision. « approuver "vert : ..." » solde
+# les preuves avec ce compte rendu et la ramene PUBLISHED, SANS republier ;
+# « refuser "sortie" » marque la preuve rouge et rouvre la tache (READY), la
+# sortie etant transmise a l'agent comme consigne. Tests PV3, PV4.
+PREUVE_OUV=0; [[ "$RAISONS_OUV" == *P16:* ]] && PREUVE_OUV=1
+PREUVES_F="$STATE_DIR/$TASK_ID.preuves.json"
+if (( PREUVE_OUV == 1 )) && [[ "$DECISION_H" == approuver || "$DECISION_H" == refuser ]]; then
+  [[ -n "$MESSAGE" ]] || die "$DECISION_H d'une preuve a fournir (P16) : donner le compte rendu (vert : ..., ou la sortie rouge)"
+  if [[ "$DECISION_H" == approuver ]]; then MODE_APPROUVER="preuve"; CIBLE="PUBLISHED"; else CIBLE="READY"; fi
 fi
 
 if (( DRY_RUN == 1 )); then
@@ -323,6 +349,32 @@ if (( REPRISE_SANS_AGENT == 1 )); then
   grep -qx 'reprise=controles' "$ENVF" || printf 'reprise=controles\n' >>"$ENVF"
 fi
 
+# (2026-09-25, ADR 0003 R1) « modifier » sur une conception en doute : l'humain
+# passe outre, pour CETTE declaration de tache seulement. Test CO4.
+if [[ "$DECISION_H" == modifier ]] && (( CONCEPTION_OUV == 1 )); then
+  mkdir -p "$STATE_DIR"
+  empreinte_tache "$TASK_ID" >"$STATE_DIR/$TASK_ID.conception-outre"
+  log "$TASK_ID : conception en doute — l'humain passe outre (consigne transmise a l'agent)"
+fi
+
+# (2026-09-25, ADR 0003 R3) Preuve soldee ou rouge : trace dans preuves.json ; la
+# sortie rouge devient la consigne de l'agent. Tests PV3, PV4.
+if (( PREUVE_OUV == 1 )) && [[ "$DECISION_H" == approuver || "$DECISION_H" == refuser ]] && [[ -f "$PREUVES_F" ]]; then
+  STATUT_PREUVE="soldee"; [[ "$DECISION_H" == refuser ]] && STATUT_PREUVE="rouge"
+  jq --arg s "$STATUT_PREUVE" --arg m "$MESSAGE" --arg o "$ORIGINE" --arg ts "$(date -u +%FT%TZ)" \
+    'map(if .statut == "a_fournir" then . + {statut:$s, compte_rendu:$m, origine:$o, le:$ts} else . end)' \
+    "$PREUVES_F" >"$PREUVES_F.tmp" && mv "$PREUVES_F.tmp" "$PREUVES_F"
+  if [[ "$DECISION_H" == refuser ]]; then
+    python3 - "$ENVF" "Preuve rouge (compte rendu humain) : $MESSAGE" <<'PY'
+import sys
+p, consigne = sys.argv[1:3]
+rows = [('consigne_humaine=' + consigne + '\n') if l.startswith('consigne_humaine=') else l for l in open(p, encoding='utf-8')]
+open(p, 'w', encoding='utf-8').writelines(rows)
+PY
+  fi
+  log "$TASK_ID : preuve(s) $STATUT_PREUVE — $MESSAGE"
+fi
+
 # (2026-09-22, Y7) Filtre d'origine cite ici (lignes continuees ci-dessous) :
 # AVANT :   '{tache:$t, decision:$d, message:$m, ts:$ts, etat_avant:$av, origine:$origine, regle:($regle|select(length>0))}' \
 #   Regle vide (toute reponse HUMAINE) : « select » ne produit rien, et un objet
@@ -348,5 +400,7 @@ with open(p, 'w', encoding='utf-8') as f:
     for row in rows:
         f.write(json.dumps(row, ensure_ascii=False) + '\n')
 PY
+# (2026-09-27, O3 partie 2) L'escalade resolue ferme son issue GitHub. Test GI3.
+fermer_issue_escalade "$TASK_ID" resolue "$ETAT_DIR/escalades"
 
 log "Reponse enregistree : $TASK_ID -> $DECISION_H ($ORIGINE)"

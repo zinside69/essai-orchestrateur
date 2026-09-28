@@ -138,6 +138,15 @@ if [[ -z "$VERDICT" ]]; then
   fi
 fi
 
+# P17 — modele servi ≠ modele attendu (2026-09-28, O49) : un role (auteur,
+# conception, relecteur) a ete servi par un autre modele que celui de la matrice
+# (alias qui bouge, bascule de quota). Arret dur : ni boucle de correction ni
+# publication, l'humain decide. Test MD1.
+if [[ -s "$STATE_DIR/$TASK_ID.modele-ecart" ]]; then
+  VERDICT="PARK"
+  RAISONS+=("P17:modele-servi($(awk -F'\t' '{printf "%s%s=%s(attendu %s)", (NR > 1 ? ";" : ""), $1, $3, $2}' "$STATE_DIR/$TASK_ID.modele-ecart"))")
+fi
+
 # --- Règles de progression -----------------------------------------------
 if [[ -z "$VERDICT" ]]; then
   CHEMINS_SURS=1
@@ -208,6 +217,32 @@ if [[ "$VERDICT" == "AUTO_MERGE" ]]; then
     aucun-test)   VERDICT="PR_READY"; RAISONS+=("Q3:aucun-test-fusion-automatique-refusee") ;;
     erreur)       VERDICT="PR_READY"; RAISONS+=("Q3:preuve-rouge-impossible-fusion-automatique-refusee") ;;
   esac
+fi
+
+# --- Q4 — tache corrigee apres un desaccord : jamais de fusion automatique
+# (2026-09-27, O48, decision de l'operateur : option B) Le relecteur a d'abord
+# ete en desaccord ; l'agent a corrige (boucle de correction, pipeline.sh) et un
+# relecteur neuf est d'accord. Rien ne garantit que l'agent a corrige plutot
+# qu'ecrit pour satisfaire le relecteur, et le second relecteur ignore le
+# desaccord. Un desaccord est un signal : AUTO_MERGE est ramene a PR_READY, la
+# fusion revient a l'humain. Les autres verdicts ne changent pas. Suite possible
+# (option C) : faire confirmer par le relecteur que chaque rejet est solde.
+# Test BC4.
+CORRECTIONS_FAITES="$(sed -n 's/^corrections=//p' "$ORCH_DIR/etat/taches/$TASK_ID.env" 2>/dev/null | head -1 || true)"
+if [[ "$VERDICT" == "AUTO_MERGE" ]] && (( ${CORRECTIONS_FAITES:-0} > 0 )); then
+  VERDICT="PR_READY"
+  RAISONS+=("Q4:corrige-apres-desaccord(${CORRECTIONS_FAITES})-fusion-automatique-refusee")
+fi
+
+# --- P16 — preuve a fournir : jamais de fusion automatique ---------------
+# (2026-09-25, ADR 0003 R3, O40) L'agent a demande une preuve qu'il ne pouvait
+# pas produire (E2E hors de portee, mutation d'un fichier critique) : tant
+# qu'elle n'est pas soldee, AUTO_MERGE est ramene a PR_READY, et la raison P16
+# (L3) demande a l'humain de la fournir. Reconcile refuse DONE d'ici la. PV1.
+PREUVES_A_FOURNIR="$(jq '[.[]? | select(.statut == "a_fournir")] | length' "$STATE_DIR/$TASK_ID.preuves.json" 2>/dev/null || echo 0)"
+if (( PREUVES_A_FOURNIR > 0 )) && [[ "$VERDICT" != "PARK" ]]; then
+  [[ "$VERDICT" == "AUTO_MERGE" ]] && VERDICT="PR_READY"
+  RAISONS+=("P16:preuve-a-fournir($PREUVES_A_FOURNIR)")
 fi
 
 # --- M4 / défaut : fail-safe --------------------------------------------

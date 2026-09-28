@@ -23,13 +23,16 @@ set -Eeuo pipefail
 source "$(dirname "$0")/lib.sh"
 
 FORMAT=html
-PROJET=""
+# AVANT : PROJET=""
+#   (2026-09-28) --projet se repete (un par projet orchestre), voir plus bas. Test V7.
+PROJETS=()
 JOURS=3650
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) sed -n '2,3p' "$0" | sed 's/^# //'; exit 0 ;;
     --format) FORMAT="${2:?valeur manquante pour --format}"; shift 2 ;;
-    --projet) PROJET="${2:?valeur manquante pour --projet}"; shift 2 ;;
+    # AVANT :     --projet) PROJET="${2:?valeur manquante pour --projet}"; shift 2 ;;
+    --projet) PROJETS+=("${2:?valeur manquante pour --projet}"); shift 2 ;;
     --jours) JOURS="${2:?valeur manquante pour --jours}"; shift 2 ;;
     *) die "argument inattendu : $1" ;;
   esac
@@ -38,6 +41,8 @@ done
 [[ "$JOURS" =~ ^[0-9]+$ ]] || die "--jours attend un entier : $JOURS"
 
 require git python3
+# (2026-09-28) jq fusionne les couts de plusieurs projets (--projet repete).
+require jq
 CHAP="$ROOT/docs/specification/chapitres"
 PRES="docs/specification/chapitres/00-presentation.md"
 P4="tests/run-phase4.sh"
@@ -59,8 +64,17 @@ derniere_version() { grep -oE '^_Version [0-9]+\.[0-9]+' | tail -1 | sed 's/^_Ve
 # qui touche run-phase4 ou le chapitre 0, du plus recent au plus ancien. L'etat
 # du disque passe en tete (commit « disque ») : la page suit le travail en cours.
 {
-  printf '%s\t%s\tdisque\t%s\n' "$(derniere_version <"$ROOT/$PRES")" \
-    "$(compter_controles <"$ROOT/$P4")" "$(date +%F)"
+  # (2026-09-26, O32 — appele O28 dans le todo : le O28 du chap. 7 est le controle E2E) La ligne « disque » ne sert que s'il y a du travail non commite dans les deux
+  # fichiers dont elle tire ses valeurs. Sur un depot propre elle faisait dire a l'info-bulle
+  # « modifications non commitees » et masquait le vrai commit et sa date. Si git status echoue
+  # (ex. dubious ownership), on la garde : mieux vaut l'ancien comportement qu'une page qui n'a
+  # rien lu (V3). Test V6.
+  # AVANT : printf '%s\t%s\tdisque\t%s\n' "$(derniere_version <"$ROOT/$PRES")" \
+  # AVANT :   "$(compter_controles <"$ROOT/$P4")" "$(date +%F)"
+  if ! ETAT_GIT="$(git -C "$ROOT" status --porcelain -- "$P4" "$PRES" 2>/dev/null)" || [[ -n "$ETAT_GIT" ]]; then
+    printf '%s\t%s\tdisque\t%s\n' "$(derniere_version <"$ROOT/$PRES")" \
+      "$(compter_controles <"$ROOT/$P4")" "$(date +%F)"
+  fi
   git -C "$ROOT" log --format='%h %cs' -- "$P4" "$PRES" | while read -r h d; do
     # Un commit anterieur au chapitre 0 (ou a run-phase4) n'a pas le fichier :
     # git show echoue, la ligne est ignoree — sans `|| true`, set -e sortait muet.
@@ -71,13 +85,48 @@ derniere_version() { grep -oE '^_Version [0-9]+\.[0-9]+' | tail -1 | sed 's/^_Ve
 } >"$TMP/historique.tsv"
 
 printf '{}' >"$TMP/couts.json"
-if [[ -n "$PROJET" ]]; then
-  [[ -d "$PROJET/.orchestrator" ]] || die "--projet : pas de .orchestrator dans $PROJET"
-  # ROOT et ORCH_STATE sont exportes par lib.sh : couts.sh doit lire le projet,
-  # pas le socle.
-  env -u ORCH_STATE ROOT="$(cd "$PROJET" && pwd)" \
-    "$ROOT/orchestrator/couts.sh" --format json --jours "$JOURS" >"$TMP/couts.json" \
-    || die "--projet : couts.sh a echoue dans $PROJET"
+# AVANT : if [[ -n "$PROJET" ]]; then
+# AVANT :   [[ -d "$PROJET/.orchestrator" ]] || die "--projet : pas de .orchestrator dans $PROJET"
+# AVANT :   # ROOT et ORCH_STATE sont exportes par lib.sh : couts.sh doit lire le projet,
+# AVANT :   # pas le socle.
+# AVANT :   env -u ORCH_STATE ROOT="$(cd "$PROJET" && pwd)" \
+# AVANT :     "$ROOT/orchestrator/couts.sh" --format json --jours "$JOURS" >"$TMP/couts.json" \
+# AVANT :     || die "--projet : couts.sh a echoue dans $PROJET"
+# AVANT : fi
+#   (2026-09-28) --projet se repete : les couts de TOUS les projets orchestres
+#   sont additionnes. La page ne montrait qu'un projet, celui d'essai du 23/09
+#   (4,15 $), alors que le ticket 05 d'iziGSM en avait coute 66,76. Chaque tache
+#   porte le nom de son projet (les numeros T-NNN se repetent d'un projet a
+#   l'autre). Avec plusieurs projets, les totaux qui ne s'additionnent pas (cout
+#   par verdict, jour le plus cher) sont retires plutot que faux. Test V7.
+if (( ${#PROJETS[@]} > 0 )); then
+  for P in "${PROJETS[@]}"; do
+    [[ -d "$P/.orchestrator" ]] || die "--projet : pas de .orchestrator dans $P"
+    # ROOT et ORCH_STATE sont exportes par lib.sh : couts.sh doit lire le projet,
+    # pas le socle.
+    env -u ORCH_STATE ROOT="$(cd "$P" && pwd)" \
+      "$ROOT/orchestrator/couts.sh" --format json --jours "$JOURS" \
+      | jq -c --arg p "$(basename "$(cd "$P" && pwd)")" '. + {projet: $p} | .taches |= map(. + {projet: $p})' \
+      >>"$TMP/couts-projets.jsonl" \
+      || die "--projet : couts.sh a echoue dans $P"
+  done
+  jq -s '
+    def somme(f): map(f // 0) | add;
+    if length == 1 then .[0] + {projets: [.[0].projet]} else
+    .[0] + {
+      projets: map(.projet),
+      totaux: ((.[0].totaux + {
+                 cout_usd: somme(.totaux.cout_usd), auteur_usd: somme(.totaux.auteur_usd),
+                 relecteur_usd: somme(.totaux.relecteur_usd), appels: somme(.totaux.appels),
+                 mesures_absentes: somme(.totaux.mesures_absentes),
+                 cout_sans_resultat_usd: somme(.totaux.cout_sans_resultat_usd),
+                 tokens: (map(.totaux.tokens // {}) | reduce .[] as $t ({}; reduce ($t | keys[]) as $k (.; .[$k] += $t[$k])))})
+               | .part_cache_lu = (((.tokens.entree // 0) + (.tokens.cache_lu // 0) + (.tokens.cache_ecrit // 0)) as $e
+                                   | if $e > 0 then ((.tokens.cache_lu // 0) / $e * 1000 | round / 1000) else 0 end)
+               | del(.cout_par_verdict, .cout_max_jour, .alerte_jour)),
+      prix: {ecart_max: .[0].prix.ecart_max, ecarts: (map(.prix.ecarts // []) | add), non_juges: somme(.prix.non_juges)},
+      taches: (map(.taches) | add)
+    } end' "$TMP/couts-projets.jsonl" >"$TMP/couts.json"
 fi
 
 SCRIPTS="$(git -C "$ROOT" ls-files '*.sh' .githooks/pre-push | wc -l | tr -d ' ')"

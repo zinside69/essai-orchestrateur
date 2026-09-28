@@ -8,7 +8,9 @@ source "$(dirname "$0")/lib.sh"
 TASK_ID="${1:?usage: review.sh T-NNN}"
 WT="${2:?chemin du worktree}"
 BASE="${3:-$INTEGRATION_BRANCH}"
-MODELE_AUTEUR="${MODELE_AUTEUR:-sonnet}"
+# AVANT : MODELE_AUTEUR="${MODELE_AUTEUR:-sonnet}"
+#   (2026-09-28, O49) Une seule source : matrice.json (identifiant exact).
+MODELE_AUTEUR="${MODELE_AUTEUR:-$(jq -r '.revue.modele_auteur' "$ROOT/orchestrator/matrice.json")}"
 
 M="$ROOT/orchestrator/matrice.json"
 STATE="$STATE_DIR/$TASK_ID"
@@ -158,9 +160,17 @@ journaliser_cout "$TASK_ID" relecteur "$STATE.reviewer.json"
 [[ $RC -eq 0 ]] || isolation_invalide "reviewer en échec (code $RC)"
 
 # --- P4 : validation stricte de la sortie ---------------------------------
-jq -e '.result | fromjson | .verdict as $v | (.confiance|type=="number") and
+# AVANT : jq -e '.result | fromjson | .verdict as $v | (.confiance|type=="number") and
+# AVANT :        ($v=="accord" or $v=="reserve" or $v=="desaccord")' \
+# AVANT :    "$STATE.reviewer.json" >/dev/null 2>&1 || {
+#   (2026-09-27, O43) Meme lecture tolerante que la relecture de conception
+#   (json_du_modele, lib.sh) : un verdict entre balises Markdown ou entoure de
+#   texte se lit ; le schema exige ne change pas, une sortie illisible reste P4.
+#   Test RV3.
+JSON_REV="$(json_du_modele "$STATE.reviewer.json" || true)"
+jq -e '.verdict as $v | (.confiance|type=="number") and
        ($v=="accord" or $v=="reserve" or $v=="desaccord")' \
-   "$STATE.reviewer.json" >/dev/null 2>&1 || {
+   <<<"${JSON_REV:-null}" >/dev/null 2>&1 || {
   jq -n --arg t "$TASK_ID" \
     '{schema_version:"2.0", verdict:"desaccord", confiance:0.0, nature:"mutative",
       rejets:[{code:"R0", gravite:"critique",
@@ -170,7 +180,9 @@ jq -e '.result | fromjson | .verdict as $v | (.confiance|type=="number") and
   exit 20
 }
 
-jq -c '.result | fromjson' "$STATE.reviewer.json" >"$REVUE"
+# AVANT : jq -c '.result | fromjson' "$STATE.reviewer.json" >"$REVUE"
+#   (2026-09-27, O43) L'objet deja lu par json_du_modele, ci-dessus.
+printf '%s\n' "$JSON_REV" >"$REVUE"
 
 # --- V1 recroisée : le reviewer déclare-t-il bien le modèle attendu ? -----
 DECLARE="$(jq -r '.modele_reviewer // "inconnu"' "$REVUE")"

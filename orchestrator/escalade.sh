@@ -72,6 +72,38 @@ with open(p, 'w', encoding='utf-8') as f:
     for row in rows:
         f.write(json.dumps(row, ensure_ascii=False) + '\n')
 PY
+  # (2026-09-27, O3 partie 2) Escalade terminee (expiree, archivee, sans objet) :
+  # son issue GitHub se ferme. Test GI2.
+  fermer_issue_escalade "$task" "$nouveau" "$ESC_DIR"
+}
+
+# notifier_issue <niveau> <T-NNN> <message> — canal github_issue (2026-09-27, O3
+# partie 2), generique pour tout projet orchestre. L'issue n'aboutissait jamais :
+# l'etiquette escalade-Ln n'existait pas dans le depot. Le socle cree ses deux
+# etiquettes (« --force » : sans effet si elles existent), cree l'issue a
+# l'OUVERTURE seulement et memorise son URL dans issues.tsv ; une relance ou
+# l'avis d'expiration la COMMENTENT (avant : une nouvelle issue a chaque relance).
+# gh deduit le depot du dossier courant : il est lance depuis ROOT, le projet.
+# Codes : 70 = URL illisible dans la reponse de gh, 71 = aucune issue connue
+# pour cette tache (rien a commenter). Tests GI1, GI2.
+NOTIF_OUVERTURE=0
+notifier_issue() {
+  local niveau="$1" tache="$2" message="$3" url
+  if [[ "$NOTIF_OUVERTURE" == 1 ]]; then
+    ( cd "$ROOT" && gh label create "escalade-$niveau" --force --color B60205 \
+        --description "Escalade du socle d'orchestration, niveau $niveau" ) >/dev/null 2>&1 || return $?
+    ( cd "$ROOT" && gh label create agent --force --color 5319E7 \
+        --description "Travail d'un agent du socle d'orchestration" ) >/dev/null 2>&1 || return $?
+    url="$( cd "$ROOT" && gh issue create --title "[$niveau] $tache — decision requise" \
+        --body "$message" --label "agent,escalade-$niveau" 2>/dev/null )" || return $?
+    url="$(printf '%s\n' "$url" | grep -Eo 'https://[^[:space:]]+/issues/[0-9]+' | tail -1 || true)"
+    [[ -n "$url" ]] || return 70
+    printf '%s\t%s\n' "$tache" "$url" >>"$ESC_DIR/issues.tsv"
+    return 0
+  fi
+  url="$(issue_de_tache "$tache" "$ESC_DIR")"
+  [[ -n "$url" ]] || return 71
+  gh issue comment "$url" --body "$message" >/dev/null 2>&1
 }
 
 # --- Configuration hors depot (2026-09-20) -----------------------------------
@@ -189,6 +221,15 @@ notifier() {
       printf '[DRY-RUN notify:%s] [%s] %s\n%s\n' "$c" "$niveau" "$tache" "$message"
       continue
     fi
+    # (2026-09-27, O3 partie 2) Projet sans remote : github_issue n'a nulle part ou
+    # aller. Ni tentative ni echec (M17 ne le compte pas) : une ligne « ignore ».
+    # Un projet sans remote est un cas voulu (bac a sable, O4). Test GI4.
+    if [[ "$c" == github_issue ]] && ! git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+      log "[NOTIF] github_issue : pas de remote origin dans $ROOT, canal ignore"
+      jq -nc --arg ts "$(date -u +%FT%TZ)" --arg t "$tache" --arg n "$niveau" \
+        '{ts:$ts,tache:$t,niveau:$n,canal:"github_issue",statut:"ignore",code:0}' >>"$JN"
+      continue
+    fi
 
     # (2026-09-20) Les branches finissaient en « || true » avec la sortie supprimee :
     # un gh non authentifie et un gh reussi etaient indistinguables, et une escalade
@@ -233,8 +274,10 @@ notifier() {
             -sS -H "Title: [$niveau] $tache" -H "Priority: $prio" -H "Tags: robot" -d "$message" >/dev/null 2>&1 || rc=$?
         fi ;;
       github_issue)
-        gh issue create --title "[$niveau] $tache — decision requise" \
-          --body "$message" --label "agent,escalade-$niveau" >/dev/null 2>&1 || rc=$? ;;
+        # (2026-09-27, O3 partie 2) AVANT :
+        # gh issue create --title "[$niveau] $tache — decision requise" \
+        #   --body "$message" --label "agent,escalade-$niveau" >/dev/null 2>&1 || rc=$? ;;
+        notifier_issue "$niveau" "$tache" "$message" || rc=$? ;;
       github_ready)
         gh pr ready "$tache" >/dev/null 2>&1 || rc=$? ;;
       commentaire_pr)
@@ -320,6 +363,10 @@ Expiration : $(heure_humaine "$expiration")
   local libelle_detail="Conclusion de l'agent"
   [[ "$raisons" == *"P12:"* ]] && libelle_detail="Demandes d'ecriture"
   [[ "$raisons" == *"P13:"* ]] && libelle_detail="Violation de la doctrine d'ecriture"
+  [[ "$raisons" == *"P4:"* ]] && libelle_detail="Revue croisee"   # (2026-09-25, O30) sortie du relecteur, pas de l'agent
+  [[ "$raisons" == *"P14:arret-conception"* ]] && libelle_detail="Conception mise en cause par l agent (amender le ticket puis approuver, ou modifier \"ta decision\")"   # (2026-09-25, ADR 0003 R2)
+  [[ "$raisons" == *"P16:"* ]] && libelle_detail="Preuve a fournir (jouer puis : approuver \"vert : ...\" ou refuser \"sortie rouge\")"   # (2026-09-25, ADR 0003 R3)
+  [[ "$raisons" == *"P15:"* ]] && libelle_detail="Conception en doute (amender le ticket puis approuver, ou modifier \"consigne\" pour passer outre)"   # (2026-09-25, ADR 0003 R1)
   if [[ -n "$detail" ]]; then
     message="$message
 $libelle_detail : $detail"
@@ -375,6 +422,15 @@ Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json su
     # le bouton le dit. Test K13.
     elif [[ "$raisons" =~ (^|[^A-Z0-9])P(8|10|11): ]]; then
       ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver:Relancer refuser)"
+    # (2026-09-25, ADR 0003 R1) Conception en doute : « approuver » fait relire
+    # le ticket (amende par l'humain), le bouton le dit. Passer outre exige un
+    # texte (« modifier ») : pas de bouton. Test CO2.
+    elif [[ "$raisons" == *"P15:"* ]]; then
+      ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver:Relire refuser)"
+    # (2026-09-25, ADR 0003 R3) Preuve a fournir : elle se solde avec un compte
+    # rendu ecrit (vert, ou la sortie rouge) — aucun bouton, repondre depuis le PC.
+    elif [[ "$raisons" == *"P16:"* ]]; then
+      ACTIONS_NTFY=""
     # (2026-09-25, O34) Diff des demandes non montrable en entier : pas
     # d'approbation a distance d'un texte non lu. Test EP3.
     elif (( p12_illisible == 1 )); then
@@ -383,7 +439,11 @@ Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json su
       ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" approuver refuser)"
     fi
   fi
+  # AVANT : notifier "$niveau" "$TASK_ID" "$message"
+  # (2026-09-27, O3 partie 2) Seule l'ouverture cree une issue GitHub.
+  NOTIF_OUVERTURE=1
   notifier "$niveau" "$TASK_ID" "$message"
+  NOTIF_OUVERTURE=0
 
   # (2026-09-22) Filtre d'origine cite ici (lignes continuees ci-dessous), avant
   # l'ajout du jeton :

@@ -64,6 +64,15 @@ if os.path.exists(matrice_p):
     bloc = json.load(open(matrice_p, encoding='utf-8')).get('couts', {})
     seuils.update({k: float(v) for k, v in bloc.items() if k in seuils})
 
+# (2026-09-28, O49) Tarifs de reference (matrice.json, couts.prix_reference) :
+# le cout annonce de chaque appel est confronte au cout attendu ; un appel a
+# plusieurs modeles, ou a un modele absent de la table, n'est pas juge. Test MD4.
+prix, ecart_max = {}, 0.15
+if os.path.exists(matrice_p):
+    bloc_prix = json.load(open(matrice_p, encoding='utf-8')).get('couts', {})
+    prix = bloc_prix.get('prix_reference', {}) or {}
+    ecart_max = float(bloc_prix.get('ecart_prix_max', 0.15))
+
 def alerte(v, ambre, rouge):
     return 'ROUGE' if v >= rouge else ('AMBRE' if v >= ambre else 'VERT')
 
@@ -108,6 +117,24 @@ for l in lignes:
     jour = str(l.get('ts', ''))[:10]
     par_jour[jour] = par_jour.get(jour, 0.0) + c
 
+# (2026-09-28, O49) Cout annonce contre cout attendu au tarif de reference.
+ecarts_prix, non_juges = [], 0
+for l in lignes:
+    if l.get('mesure') != 'ok':
+        continue
+    m = l.get('modeles') or []
+    if len(m) != 1 or m[0] not in prix:
+        non_juges += 1
+        continue
+    tk = l.get('tokens') or {}
+    attendu = sum(nombre(tk.get(k)) * nombre(prix[m[0]].get(k))
+                  for k in ('entree', 'cache_lu', 'cache_ecrit', 'sortie')) / 1e6
+    annonce = nombre(l.get('cout_usd'))
+    if attendu > 0 and abs(annonce - attendu) / attendu > ecart_max:
+        ecarts_prix.append({'tache': l.get('tache', '?'), 'role': l.get('role', '?'), 'modele': m[0],
+                            'annonce_usd': round(annonce, 6), 'attendu_usd': round(attendu, 6),
+                            'ecart_pct': round(100 * (annonce - attendu) / attendu, 1)})
+
 # Une tache qui a depense sans rien livrer : ni DONE ni PUBLISHED, et pas en cours.
 SANS_RESULTAT = ('RED', 'FAILED', 'PARKED', 'BLOCKED', 'ESCALATED')
 taches, par_verdict = [], {}
@@ -145,6 +172,7 @@ out = {
         'alerte_jour': alerte(jour_max[1], seuils['jour_ambre_usd'], seuils['jour_rouge_usd']),
         'base': sorted({str(l.get('base')) for l in lignes if l.get('base')}),
     },
+    'prix': {'ecart_max': ecart_max, 'ecarts': ecarts_prix, 'non_juges': non_juges},
     'taches': taches,
 }
 print(json.dumps(out, ensure_ascii=False))
@@ -176,6 +204,8 @@ case "$FORMAT" in
       "| Cout des taches sans resultat | \($t.cout_sans_resultat_usd | usd) | - |",
       "| Part du cache dans les tokens d entree | \($t.part_cache_lu * 100 | round) % | - |",
       "| Cout par verdict | \($t.cout_par_verdict | to_entries | map("\(.key) \(.value | usd)") | join(", ") | if . == "" then "-" else . end) | - |",
+      "| Cout incoherent avec le tarif de reference (ecart > \(.prix.ecart_max * 100 | round) %) | \(.prix.ecarts | length) appel(s) ; \(.prix.non_juges) non juge(s) | \(if (.prix.ecarts | length) > 0 then "ROUGE" else "VERT" end) |",
+      (.prix.ecarts[] | "| ↳ \(.tache) \(.role) \(.modele) | annonce \(.annonce_usd | usd), attendu \(.attendu_usd | usd) (\(.ecart_pct) %) | ROUGE |"),
       "",
       "Seuils par tache : ambre \(.seuils.tache_ambre_usd | usd), rouge \(.seuils.tache_rouge_usd | usd) ; par jour : ambre \(.seuils.jour_ambre_usd | usd), rouge \(.seuils.jour_rouge_usd | usd). Tarif public calcule par Claude Code (base : \($t.base | join(",") | if . == "" then "-" else . end)).",
       "",

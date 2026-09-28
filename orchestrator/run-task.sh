@@ -9,7 +9,9 @@ source "$(dirname "$0")/critiques.sh"
 
 TASK_ID="${1:?usage: run-task.sh T-NNN}"
 MAX_TURNS="${MAX_TURNS:-60}"
-MODEL="${MODEL:-sonnet}"
+# AVANT : MODEL="${MODEL:-sonnet}"
+#   (2026-09-28, O49) Une seule source : matrice.json (identifiant exact).
+MODEL="${MODEL:-$(jq -r '.revue.modele_auteur' "$ROOT/orchestrator/matrice.json")}"
 
 require git jq claude
 
@@ -43,6 +45,12 @@ mapfile -t T < <(parse_task "$TASK_ID")
 
 declare -A TACHE
 for kv in "${T[@]}"; do TACHE["${kv%%=*}"]="${kv#*=}"; done
+
+# (2026-09-27, O45, decision de l'operateur) Plafond de tours propre a une
+# tache : cle « max_tours=N » de sa fiche d'etat, posee par un humain (ticket
+# dense) ; sinon MAX_TURNS (60 par defaut). Test MT3.
+MAX_TOURS_FICHE="$(sed -n 's/^max_tours=//p' "$ORCH_DIR/etat/taches/$TASK_ID.env" 2>/dev/null | head -1 || true)"
+[[ "$MAX_TOURS_FICHE" =~ ^[0-9]+$ ]] && MAX_TURNS="$MAX_TOURS_FICHE"
 
 WT="$WORKTREE_ROOT/$TASK_ID"
 BRANCH="$AGENT_BRANCH_PREFIX/$TASK_ID"
@@ -140,6 +148,12 @@ fi
 # tache et dans le prompt, prioritaire, puis est consommee apres la session. Test EC13.
 FICHE_TACHE="$ORCH_DIR/etat/taches/$TASK_ID.env"
 CONSIGNE_H="$(sed -n 's/^consigne_humaine=//p' "$FICHE_TACHE" 2>/dev/null | head -1 || true)"
+# (2026-09-27, O48) Corrections demandees par le relecteur (boucle de
+# correction, pipeline.sh) : ecrites dans l'etat, remises a l'agent comme la
+# consigne humaine, consommees apres la session. Test BC1.
+CORRECTIONS_F="$STATE_DIR/$TASK_ID.corrections.md"
+CORRECTIONS=""
+[[ -f "$CORRECTIONS_F" ]] && CORRECTIONS="$(cat "$CORRECTIONS_F")"
 cat >"$WT/.claude-task.md" <<EOF
 # Tâche en cours — $TASK_ID
 
@@ -162,9 +176,27 @@ Gates à passer     : ${TACHE[gates]:-lint,typecheck,test}
   tests {joues: [], non_joues: []}, demandes_ecriture [{fichier, besoin,
   justification, diff}] (diff unifié exact, appliqué tel quel si un humain l'approuve).
   Ce compte rendu est remis au relecteur, qui le vérifie contre ton diff.
+- Conception (ADR 0003) : si une prescription du ticket (critère ou test prescrit)
+  validerait un défaut de sûreté des données (opération non atomique, course,
+  reprise après échec partiel, écrasement, double comptage) ou contredirait un
+  invariant du projet, ARRÊTE-TOI sans coder : ta conclusion commence par
+  « conception: », cite la prescription, le scénario qui casse et la variante sûre.
+  Ne code ni la prescription ni ta variante sans décision humaine — sauf si la
+  variante ne change aucun critère ni aucun test prescrit : code-la et signale-la.
+- Preuve (ADR 0003) : ce que tu ne peux pas jouer (E2E hors de portée,
+  préproduction, production) se DEMANDE dans ton compte rendu : demandes_action
+  [{type: "e2e", specs: [...], attendu, pourquoi}] ; la mutation d'un fichier
+  critique : [{type: "mutation", fichier, diff (mutation exacte), controle, pourquoi}].
+  N'écris jamais « vérifié » pour ce qui n'a pas tourné.
+- Chaque test nouveau d'un critère de sûreté : rouge prouvé par mutation — un
+  mutant à la fois, restauré, consigné dans ta conclusion (mutation, test, rouge
+  vu). Fichier critique : ne le mute pas, demande la mutation (ci-dessus).
 EOF
 if [[ -n "$CONSIGNE_H" ]]; then
   printf '\n## CONSIGNE DE L'"'"'HUMAIN (prioritaire)\n%s\n' "$CONSIGNE_H" >>"$WT/.claude-task.md"
+fi
+if [[ -n "$CORRECTIONS" ]]; then
+  printf '\n## CORRECTIONS DEMANDÉES PAR LE RELECTEUR\n%s\n' "$CORRECTIONS" >>"$WT/.claude-task.md"
 fi
 
 # (2026-09-21) La fiche de tache n'appartient pas au code du projet. Sans cette
@@ -206,6 +238,11 @@ if [[ -n "$CONSIGNE_H" ]]; then
   PROMPT="$PROMPT
 CONSIGNE DE L'HUMAIN (prioritaire sur tout le reste) : $CONSIGNE_H"
   log "Consigne humaine transmise a l'agent"
+fi
+if [[ -n "$CORRECTIONS" ]]; then
+  PROMPT="$PROMPT
+$CORRECTIONS"
+  log "Corrections du relecteur transmises a l'agent"
 fi
 
 # Skill de l'etape (2026-09-21) : designe par orchestrator/skills.json. Le prompt
@@ -261,6 +298,10 @@ CLAUDE_RC=$?
 set -e
 # Consigne consommee : elle ne sera pas redonnee a la relance suivante (EC13).
 [[ -z "$CONSIGNE_H" ]] || sed -i 's/^consigne_humaine=.*/consigne_humaine=/' "$FICHE_TACHE"
+# (2026-09-27, O48) Corrections consommees de meme. Une consigne humaine ouvre un
+# nouveau cycle : le compteur de la boucle de correction repart de zero. Test BC2.
+rm -f "$CORRECTIONS_F"
+[[ -z "$CONSIGNE_H" ]] || sed -i '/^corrections=/d' "$FICHE_TACHE"
 
 # (2026-09-24, ADR 0002, verrous 4 et 5) Compte rendu de l'agent : lu par le
 # harnais, conserve dans l'etat (remis au relecteur par review.sh), jamais
@@ -282,6 +323,17 @@ if [[ -f "$WT/$COMPTE_RENDU_AGENT" ]]; then
     (( DEM_ECARTEES == 0 )) || log "Demande(s) d'ecriture ecartee(s) faute de diff : $DEM_ECARTEES"
     rm -f "$STATE_DIR/$TASK_ID.demandes.decision"
     log "Compte rendu de l'agent conserve ($(jq length "$STATE_DIR/$TASK_ID.demandes.json") demande(s) d'ecriture)"
+    # (2026-09-25, ADR 0003 R3, O40) Demandes d'ACTION : la preuve que l'agent ne
+    # peut pas produire (E2E hors de portee, mutation d'un fichier critique). Une
+    # demande e2e sans specs, ou mutation sans fichier ni diff, est ecartee. Elles
+    # interdisent la fusion automatique et DONE tant qu'elles ne sont pas soldees
+    # (decide.sh, reconcile.sh). Tests PV1, PV2.
+    jq '[(.demandes_action // [])[]
+         | select((.type == "e2e" and ((.specs // []) | length > 0))
+                  or (.type == "mutation" and (.fichier // "") != "" and ((.diff // "") | test("@@"))))]
+        | to_entries | map(.value + {id: ("P16-" + ((.key + 1) | tostring)), statut: "a_fournir"})' \
+      "$CR_ETAT" >"$STATE_DIR/$TASK_ID.preuves.json"
+    log "Preuve(s) demandee(s) par l'agent : $(jq length "$STATE_DIR/$TASK_ID.preuves.json")"
   else
     jq -n --rawfile b "$WT/$COMPTE_RENDU_AGENT" '{invalide: true, brut: $b}' >"$CR_ETAT"
     log "Compte rendu de l'agent illisible (JSON invalide) : transmis tel quel au relecteur"
@@ -317,6 +369,17 @@ if [[ -n "$(git status --porcelain)" ]]; then
   git -c user.name="agent-$TASK_ID" -c user.email="agent@local" \
       commit -q -m "$TASK_ID: implémentation automatique (session ${SESSION_ID:-n/a})"
   log "Commit agent créé sur $BRANCH"
+fi
+
+# (2026-09-27, O45, premier vrai ticket iziGSM) Agent coupe par son plafond de
+# tours (T-001 : 60 tours, avant tests et ecran) : le socle lancait quand meme
+# les controles et ne disait jamais « agent coupe ». Travail partiel garde sur la
+# branche (commit ci-dessus, reprise possible), controles NON lances, code 33 :
+# pipeline.sh en fait P14:max-turns. Test MT1.
+if [[ "$(jq -r 'select(.type == "result") | .subtype // empty' "$LOG" 2>/dev/null | tail -1 || true)" == error_max_turns ]]; then
+  log "Agent coupe a ${TOURS:-?} tours (plafond $MAX_TURNS) : travail partiel sur $BRANCH, controles non lances"
+  cd "$ROOT"
+  exit 33
 fi
 
 # --- 8. Porte -------------------------------------------------------------
