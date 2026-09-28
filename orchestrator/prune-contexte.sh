@@ -10,6 +10,8 @@
 #   NEUTRE   (delta = 0) : candidat à la prune (n'améliore aucune métrique) ;
 #   NEGATIVE (delta < 0) : quarantaine (dégrade les métriques).
 # Journal : .orchestrator/journal/prune-docs.jsonl — exploité par M16.
+# (2026-09-26, O18) La neutralisation se fait dans un CLONE JETABLE du dépôt : le document du
+# dépôt réel n'est jamais renommé, même pendant les minutes que dure la mesure.
 set -Eeuo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
@@ -39,7 +41,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require jq awk grep
+# AVANT : require jq awk grep
+require jq awk grep git   # (2026-09-26, O18) git : clone jetable de mesure
+# (2026-09-26, O18) Garde-fou : ce script lance des suites dans un clone jetable et exporte
+# ORCH_PRUNE_CLONE ; s'il est relance depuis cet environnement, il refuse plutot que de cloner
+# sans fin. Aujourd'hui aucune suite ne le rappelle : c'est une protection contre l'avenir. Test J4.
+if [[ -n "${ORCH_PRUNE_CLONE:-}" ]]; then
+  die "prune-contexte : recursion refusee (lance depuis le clone jetable d'une mesure en cours)"
+fi
 PRUNE_LOG="$ORCH_DIR/journal/prune-docs.jsonl"
 QUAR_DOCS="$ORCH_DIR/etat/quarantaine-docs.tsv"
 SORTIE="${SORTIE:-$LOG_DIR/prune-rapport.md}"
@@ -53,23 +62,67 @@ else
   DOCS=(CLAUDE.md .claude/reviewer-invariants.md .claude/agents/reviewer-diff.md)
 fi
 
+# (2026-09-22, defaut 45) La « restauration garantie » annoncee plus bas n'etait
+# garantie par rien : un run interrompu entre les deux « mv » laissait le
+# document renomme en .pruned — constate sur le CLAUDE.md du socle lui-meme.
+# Reprise d'abord (y compris en --dry-run) : un .pruned sans son original est un
+# reste d'interruption, meme par SIGKILL, qu'aucun trap n'intercepte. Test J3.
+for doc in "${DOCS[@]}"; do
+  if [[ -f "$ROOT/$doc.pruned" && ! -e "$ROOT/$doc" ]]; then
+    mv "$ROOT/$doc.pruned" "$ROOT/$doc"
+    log "document restaure (reste d'une mesure interrompue) : $doc"
+  fi
+done
+
 if (( DRY_RUN == 1 )); then
   printf '[DRY-RUN prune] docs=%s\n' "${DOCS[*]}"
   printf '[DRY-RUN prune] journal=%s rapport=%s\n' "$PRUNE_LOG" "$SORTIE"
   exit 0
 fi
 
+# (2026-09-26, O18) Clone jetable : la mesure y neutralise le document, jamais dans $ROOT.
+# Les documents évalués sont recopiés depuis le dossier de travail (on mesure ce qui est
+# sur le disque, modifications non commitées comprises) ; le reste vient de HEAD.
+# Journal, quarantaine et rapport restent écrits dans l'état réel ($ORCH_DIR).
+CLONE_DIR="$(mktemp -d)"
+DEPOT="$CLONE_DIR/depot"
+# shellcheck disable=SC2329  # appelee par les trap plus bas
+nettoyer_clone() {
+  if [[ -n "${CLONE_DIR:-}" && -d "$CLONE_DIR" ]]; then rm -rf "$CLONE_DIR"; fi
+}
+trap nettoyer_clone EXIT
+git -c safe.directory='*' clone -q "$ROOT" "$DEPOT" || die "clone jetable impossible : $ROOT"
+for doc in "${DOCS[@]}"; do
+  [[ -f "$ROOT/$doc" ]] || continue
+  mkdir -p "$(dirname "$DEPOT/$doc")"
+  cp "$ROOT/$doc" "$DEPOT/$doc"
+done
+
 # Score combiné : taux de cas manifeste + taux de succès du replay (moyenne).
+# (2026-09-26, O18 + défaut 79) mesure <racine> : les suites sont celles de la racine donnée (le
+# clone jetable), avec ROOT explicite et sans ORCH_STATE (elles écrivent dans le clone) ; le
+# nombre total de cas du manifeste est lu dans sa sortie (« 14/14 cas ») au lieu d'un 13 en dur.
 mesure() {
-  local mani replay_out
-  mani="$("$ROOT/tests/run-manifeste.sh" 2>/dev/null | grep -oE '[0-9]+/[0-9]+ cas' | head -1 | cut -d/ -f1)"
-  replay_out="$("$ROOT/tests/run-replay.sh" --seuil-deja-tranchees 1 --seuil-couvertes 0 2>/dev/null \
+  # AVANT : local mani replay_out
+  local mani mani_ligne mani_tot replay_out base="${1:-$ROOT}"
+  # AVANT : mani="$("$ROOT/tests/run-manifeste.sh" 2>/dev/null | grep -oE '[0-9]+/[0-9]+ cas' | head -1 | cut -d/ -f1)"
+  mani_ligne="$(ROOT="$base" ORCH_PRUNE_CLONE=1 env -u ORCH_STATE "$base/tests/run-manifeste.sh" 2>/dev/null \
+    | grep -oE '[0-9]+/[0-9]+ cas' | head -1)"
+  mani="${mani_ligne%%/*}"
+  mani_tot="${mani_ligne#*/}"
+  mani_tot="${mani_tot% cas}"
+  # AVANT : replay_out="$("$ROOT/tests/run-replay.sh" --seuil-deja-tranchees 1 --seuil-couvertes 0 2>/dev/null \
+  replay_out="$(ROOT="$base" ORCH_PRUNE_CLONE=1 env -u ORCH_STATE "$base/tests/run-replay.sh" \
+    --seuil-deja-tranchees 1 --seuil-couvertes 0 2>/dev/null \
     | grep 'success_rate' | grep -oE '[0-9.]+$')"
-  awk -v m="${mani:-0}" -v r="${replay_out:-0}" 'BEGIN{printf "%.3f", (m/13 + r)/2}'
+  # AVANT : awk -v m="${mani:-0}" -v r="${replay_out:-0}" 'BEGIN{printf "%.3f", (m/13 + r)/2}'
+  awk -v m="${mani:-0}" -v t="${mani_tot:-13}" -v r="${replay_out:-0}" \
+    'BEGIN{printf "%.3f", ((t > 0 ? m/t : 0) + r)/2}'
 }
 
 TS="$(date -u +%FT%TZ)"
-BASELINE="$(mesure)"
+# AVANT : BASELINE="$(mesure)"
+BASELINE="$(mesure "$DEPOT")"
 log "prune-contexte : baseline=$BASELINE"
 
 RAPPORT_TMP="$(mktemp)"
@@ -80,20 +133,47 @@ RAPPORT_TMP="$(mktemp)"
   printf '%s\n' '|---|---:|---:|---:|---|---|'
 } >"$RAPPORT_TMP"
 
+# (2026-09-22, defaut 45) Et pendant la mesure : remise en place sur toute
+# sortie, Ctrl+C, TERM, fermeture du terminal ou erreur. (Bash execute le trap
+# une fois la commande en cours terminee.) SIGKILL reste couvert par la reprise
+# au demarrage, ci-dessus.
+DOC_NEUTRALISE=""
+# shellcheck disable=SC2329  # appelee par les trap ci-dessous
+restaurer_doc() {
+  if [[ -n "$DOC_NEUTRALISE" && -f "$DOC_NEUTRALISE.pruned" ]]; then
+    mv "$DOC_NEUTRALISE.pruned" "$DOC_NEUTRALISE"
+    log "document restaure apres interruption : $DOC_NEUTRALISE"
+  fi
+}
+# AVANT : trap restaurer_doc EXIT
+# (2026-09-26, O18) restaurer_doc ne sert plus qu'aux restes d'anciennes versions ; le clone
+# jetable est supprimé à toute sortie (le trap EXIT posé plus haut serait sinon remplacé).
+trap 'restaurer_doc; nettoyer_clone' EXIT
+# AVANT : trap 'restaurer_doc; exit 130' INT TERM HUP
+trap 'restaurer_doc; nettoyer_clone; exit 130' INT TERM HUP
+
 for doc in "${DOCS[@]}"; do
   F="$ROOT/$doc"
   if [[ ! -f "$F" ]]; then
     log "document absent, ignoré : $doc"
     continue
   fi
-  BAK="$(mktemp)"
-  cp "$F" "$BAK"
-  # Neutralise le document (restauration garantie même en cas d'échec)
-  mv "$F" "$F.pruned"
-  SANS="$(mesure)"
-  mv "$F.pruned" "$F"
-  cmp -s "$BAK" "$F" || cp "$BAK" "$F"
-  rm -f "$BAK"
+  # (2026-09-26, O18) Neutralisation dans le CLONE jetable : $F (dépôt réel) n'est jamais
+  # renommé, plus de sauvegarde ni de restauration à garantir. Le clone reprend son document
+  # entre deux mesures, et disparaît de toute façon à la sortie.
+  # AVANT : BAK="$(mktemp)"
+  # AVANT : cp "$F" "$BAK"
+  # AVANT : # Neutralise le document (restauration garantie même en cas d'échec)
+  # AVANT : mv "$F" "$F.pruned"
+  # AVANT : DOC_NEUTRALISE="$F"
+  # AVANT : SANS="$(mesure)"
+  # AVANT : mv "$F.pruned" "$F"
+  # AVANT : DOC_NEUTRALISE=""
+  # AVANT : cmp -s "$BAK" "$F" || cp "$BAK" "$F"
+  # AVANT : rm -f "$BAK"
+  mv "$DEPOT/$doc" "$DEPOT/$doc.pruned"
+  SANS="$(mesure "$DEPOT")"
+  mv "$DEPOT/$doc.pruned" "$DEPOT/$doc"
   DELTA="$(awk -v a="$BASELINE" -v s="$SANS" 'BEGIN{printf "%+.3f", a-s}')"
   CONTRIB="$(awk -v d="$DELTA" 'BEGIN{ if (d+0 > 0) print "POSITIVE"; else if (d+0 < 0) print "NEGATIVE"; else print "NEUTRE" }')"
   case "$CONTRIB" in

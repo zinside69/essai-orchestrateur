@@ -57,6 +57,11 @@ id_re = re.compile(r'^T-[0-9]{3,}$')
 noeuds = {}
 errors = []
 raw_entries = []
+# O42 (2026-09-26) : taches cochees "- [x]" a la main, et taches qui ont une fiche d'etat.
+# Une tache cochee sans fiche est ecartee de l'ordonnancement (ni eligible ni suspendue) :
+# seule la fiche d'etat fait foi, jamais la case seule.
+cochees = set()
+avec_fiche = set()
 
 with open(manifeste, encoding='utf-8') as fh:
     for lineno, brut in enumerate(fh, start=1):
@@ -71,6 +76,8 @@ with open(manifeste, encoding='utf-8') as fh:
             errors.append(f'ligne {lineno}: nombre de champs insuffisant ({len(parts)})')
             continue
         ident = re.sub(r'^- \[[ x]\] ', '', parts[0]).strip()
+        if s.startswith('- [x]'):
+            cochees.add(ident)
         prio, perim, critere, gates = parts[1:5]
         extras = parts[5:]
         if not id_re.match(ident):
@@ -148,6 +155,7 @@ if os.path.isdir(et_dir):
             k, v = l.rstrip('\n').split('=', 1)
             if k == 'etat':
                 noeuds[tid]['etat'] = v
+                avec_fiche.add(tid)
             elif k == 'tentatives':
                 try:
                     noeuds[tid]['tentatives'] = int(v or 0)
@@ -200,8 +208,14 @@ while file:
 cycles = [t for t in noeuds if degre[t] > 0] if vus != len(noeuds) else []
 
 suspendues, eligibles = [], []
+cochees_ecartees = []
 for t, n in noeuds.items():
     if n['etat'] in ('DONE', 'FAILED'):
+        continue
+    # O42 (2026-09-26) : cochee "[x]" sans fiche d'etat => ecartee, jamais lancee. Ses dependantes
+    # restent suspendues (deps_satisfaites exige DONE) : un "[x]" a la main ne vaut pas "fait".
+    if t in cochees and t not in avec_fiche:
+        cochees_ecartees.append(t)
         continue
     deps_satisfaites = all(noeuds[d]['etat'] == 'DONE' for d in n['deps'])
     if not deps_satisfaites:
@@ -248,6 +262,9 @@ if machine:
 if not verifier:
     with open(sortie, 'w', encoding='utf-8') as f:
         json.dump(graphe, f, ensure_ascii=False, indent=2)
+
+if cochees_ecartees:
+    print(f"tache(s) cochee(s) [x] sans fiche d'etat, non lancee(s) : {', '.join(sorted(cochees_ecartees))}", file=sys.stderr)
 
 if cycles:
     print(f"CYCLE DETECTE : {' -> '.join(cycles)}", file=sys.stderr)

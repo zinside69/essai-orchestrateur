@@ -27,6 +27,12 @@ PRUNE="$ORCH_DIR/journal/prune-docs.jsonl"
 QUAR="$ETAT_DIR/quarantaine.tsv"
 QUAR_DOCS="$ETAT_DIR/quarantaine-docs.tsv"
 TRANS="$ORCH_DIR/journal/transitions.jsonl"
+# (2026-09-22, defaut 7) Cout et tokens des agents, agreges par couts.sh ; passes
+# par l'environnement (COUTS_WEB) pour laisser intacte la ligne d'appel ci-dessous.
+# couts.sh en echec : « null », la section l'indique. Test N6.
+COUTS_WEB="$(mktemp)"
+"$ROOT/orchestrator/couts.sh" --format json >"$COUTS_WEB" 2>/dev/null || printf 'null' >"$COUTS_WEB"
+export COUTS_WEB
 
 python3 - "$ETAT_DIR" "$DEC" "$ESC" "$EVALS" "$PRUNE" "$QUAR" "$QUAR_DOCS" "$TRANS" "$SORTIE" <<'PY'
 import json, os, sys, html, datetime
@@ -102,6 +108,48 @@ n_humain = len(esc_ouvertes) + len(PAR_ETAT['attente'])
 alerte = ('ROUGE', 'Action requise : éléments critiques ou quarantaines.') if n_crit > 0 else \
          ('AMBRE', 'Décisions humaines en attente.') if n_humain > 0 else \
          ('VERT', 'Aucun point bloquant détecté.')
+
+# --- Couts et tokens (2026-09-22, defaut 7) : agregat de couts.sh -------------
+try:
+    couts = json.load(open(os.environ.get('COUTS_WEB', ''), encoding='utf-8'))
+except Exception:
+    couts = None
+
+def usd(v):
+    return f"{float(v or 0):.2f} $"
+
+def kt(v):
+    v = int(v or 0)
+    return f"{round(v / 1000)} k" if v >= 1000 else str(v)
+
+if couts:
+    tc = couts['totaux']
+    rows_couts = ''.join(
+        f"<tr><td><b>{esc(t['tache'])}</b></td><td>{badge(t['etat'])}</td><td>{esc(t['verdict'])}</td>"
+        f"<td>{usd(t['auteur_usd'])}</td><td>{usd(t['relecteur_usd'])}</td><td><b>{usd(t['total_usd'])}</b></td>"
+        f"<td>{t['tours']}</td><td>{t['duree_s']} s</td>"
+        f"<td>{kt(t['tokens']['entree'] + t['tokens']['cache_lu'] + t['tokens']['cache_ecrit'])} ({kt(t['tokens']['cache_lu'])})</td>"
+        f"<td>{kt(t['tokens']['sortie'])}</td><td>{esc(', '.join(t['modeles']))}</td>"
+        f"<td><span class='alerte {esc(t['alerte'])}'>{esc(t['alerte'])}</span></td></tr>"
+        for t in couts['taches'])
+    s = couts['seuils']
+    section_couts = (
+        f"<div class='kpis'>"
+        f"<div class='kpi'><b>{usd(tc['cout_usd'])}</b><span>Coût total ({couts['periode_jours']} j)</span></div>"
+        f"<div class='kpi'><b>{usd(tc['auteur_usd'])}</b><span>Auteurs</span></div>"
+        f"<div class='kpi'><b>{usd(tc['relecteur_usd'])}</b><span>Relecteurs</span></div>"
+        f"<div class='kpi'><b>{usd(tc['cout_sans_resultat_usd'])}</b><span>Sans résultat</span></div>"
+        f"<div class='kpi'><b>{round(tc['part_cache_lu'] * 100)} %</b><span>Part du cache</span></div>"
+        f"<div class='kpi'><b class='{esc(tc['alerte_jour'])}'>{usd(tc['cout_max_jour']['usd'])}</b><span>Jour le plus cher</span></div>"
+        f"</div>"
+        + (f"<table><tr><th>Tâche</th><th>État</th><th>Verdict</th><th>Auteur</th><th>Relecteur</th><th>Total</th>"
+           f"<th>Tours</th><th>Durée</th><th>Entrée (cache)</th><th>Sortie</th><th>Modèles</th><th>Alerte</th></tr>"
+           f"{rows_couts}</table>" if rows_couts else "<p class='vide'>Aucun appel à claude sur la période.</p>")
+        + f"<p class='vide'>Seuils par tâche : ambre {usd(s['tache_ambre_usd'])}, rouge {usd(s['tache_rouge_usd'])} ; "
+          f"par jour : ambre {usd(s['jour_ambre_usd'])}, rouge {usd(s['jour_rouge_usd'])}. "
+          f"Tarif public calculé par Claude Code — ce n'est pas ce qui est facturé sous abonnement.</p>")
+else:
+    section_couts = "<p class='vide'>Coûts indisponibles (couts.sh en échec ou journal absent).</p>"
 
 ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -201,9 +249,12 @@ code{{background:#0f172a;padding:2px 6px;border-radius:4px;font-size:12px}}
   for t in transitions[-10:][::-1]) + '</table>' if transitions else '<p class="vide">Aucune transition journalisée.</p>'}
 </section>
 
+<section><h2>💰 Coûts et tokens des agents</h2>{section_couts}</section>
+
 </body></html>"""
 
 with open(out_p, 'w', encoding='utf-8') as f:
     f.write(page)
 print(f"dashboard genere : {out_p} ({len(page)} octets)")
 PY
+rm -f "$COUTS_WEB"

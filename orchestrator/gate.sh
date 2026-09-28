@@ -3,6 +3,9 @@
 set -Eeuo pipefail
 # shellcheck disable=SC1091
 source "$(dirname "$0")/lib.sh"
+# (2026-09-24, ADR 0002) Doctrine d'ecriture : fichiers critiques et perimetre.
+# shellcheck disable=SC1091
+source "$(dirname "$0")/critiques.sh"
 
 TASK_ID="${1:?usage: gate.sh T-NNN [branche-base]}"
 BASE="${2:-$INTEGRATION_BRANCH}"
@@ -21,11 +24,27 @@ cd "$WT"
 # --- 1. Gates techniques (preuve d'exécution, Phase 5 / P1-a) -------------
 # Chaque gate laisse une sortie brute horodatée dont le SHA-256 est scellé
 # dans le verdict : decide.sh revérifie hash + fraîcheur avant toute décision.
+# (2026-09-24, premiere marche reelle sur iziGSM) Horodatage en millisecondes.
+# Sous Ubuntu 26.04, date est celui de uutils : « %3N » n'y est pas compris et
+# « date +%s%3N » rendait 18 chiffres sans rapport (1 127 968 187 « ms » pour un
+# tsc d'une seconde). « %s%N » rend 19 chiffres chez GNU comme chez uutils : on en
+# garde les 13 premiers. Sinon (date BSD, %N non gere) : secondes x 1000. Test DU1.
+maintenant_ms() {
+  local n
+  n="$(date +%s%N 2>/dev/null || true)"
+  if [[ "$n" =~ ^[0-9]{19}$ ]]; then
+    printf '%s\n' "${n:0:13}"
+  else
+    printf '%s000\n' "$(date +%s)"
+  fi
+}
+
 run_gate() {
   local nom="$1"; shift
   local logf="$LOG_DIR/gate-$TASK_ID-$nom.log"
   local t0 t1 dur rc sha
-  t0="$(date +%s%3N 2>/dev/null || date +%s)"
+  # AVANT :   t0="$(date +%s%3N 2>/dev/null || date +%s)"
+  t0="$(maintenant_ms)"
   if "$@" >"$logf" 2>&1; then
     rc=0
     log "gate OK  : $nom"
@@ -35,7 +54,8 @@ run_gate() {
     VERDICT="red"
     RAISONS+=("gate:$nom")
   fi
-  t1="$(date +%s%3N 2>/dev/null || date +%s)"
+  # AVANT :   t1="$(date +%s%3N 2>/dev/null || date +%s)"
+  t1="$(maintenant_ms)"
   dur=$(( t1 - t0 ))
   sha="$(sha256sum "$logf" | awk '{print $1}')"
   GATES_PROOF+=("$(jq -nc --arg n "$nom" --arg s "$sha" --argjson d "$dur" --argjson rc "$rc" \
@@ -101,9 +121,23 @@ MAX_LINES="${MAX_LINES:-800}"
 if (( FILES == 0 )); then
   VERDICT="red"; RAISONS+=("diff:vide")
 fi
+VERDICT_AVANT_QUOTA="$VERDICT"
 if (( FILES > MAX_FILES || LINES > MAX_LINES )); then
   VERDICT="escalate"
   RAISONS+=("quota:depasse(${FILES}f/${LINES}l)")
+fi
+# (2026-09-24, O29) Depassement accepte par un humain (« repondre.sh approuver »
+# sur une escalade des controles) : honore pour CE travail — run-task.sh retire
+# l'acceptation a toute nouvelle session de l'agent — et trace dans le verdict.
+# Jamais pour une violation de la doctrine d'ecriture (P13, plus bas). Test EC14.
+DEPASSEMENTS_ACCEPTES="$STATE_DIR/$TASK_ID.depassements-acceptes"
+if [[ -f "$DEPASSEMENTS_ACCEPTES" ]] && grep -qx quota "$DEPASSEMENTS_ACCEPTES" \
+   && (( FILES > MAX_FILES || LINES > MAX_LINES )); then
+  RAISONS_SANS_QUOTA=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == quota:depasse* ]] || RAISONS_SANS_QUOTA+=("$r"); done
+  RAISONS=("${RAISONS_SANS_QUOTA[@]+"${RAISONS_SANS_QUOTA[@]}"}" "quota:accepte-humain")
+  VERDICT="$VERDICT_AVANT_QUOTA"
+  log "Quota depasse (${FILES}f/${LINES}l) accepte par un humain pour ce travail"
 fi
 
 # --- 3. Classification de risque ------------------------------------------
@@ -123,10 +157,42 @@ while read -r f; do
   esac
 done < <(git diff --name-only "$BASE"...HEAD)
 
+# --- 3 ter. Doctrine d'ecriture (ADR 0002, verrou 3 : detecter apres) --------
+# Un fichier critique ou hors perimetre touche malgre le hook (contournement par
+# le shell) : P13, derive en L4 — branche fautive en quarantaine (pipeline.sh),
+# jamais publiable (publisher.sh), le clone ne repond pas (J2). L'emporte sur des
+# controles rouges : une violation n'est pas un simple nouvel essai (P11). Un
+# fichier dont une demande a ete approuvee par un humain, et que rien n'a
+# retouche depuis, est autorise (empreinte ecrite par repondre.sh). Avant ce
+# controle, le perimetre n'etait qu'une phrase de la consigne de l'agent.
+PERIMETRE_TACHE="$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')"
+MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+FAUTIFS=()
+while IFS= read -r faute; do
+  [[ -n "$faute" ]] && FAUTIFS+=("$faute")
+done < <(fichiers_fautifs "$WT" "$MERGE_BASE" HEAD "$PERIMETRE_TACHE" "$STATE_DIR/$TASK_ID.demandes-appliquees")
+if (( ${#FAUTIFS[@]} > 0 )); then
+  VERDICT="escalate"
+  RISK="high"
+  for faute in "${FAUTIFS[@]}"; do RAISONS+=("P13:$faute"); done
+  log "VIOLATION de la doctrine d'ecriture : ${FAUTIFS[*]}"
+fi
+
 # Catégories Q3 → escalade systématique
 if [[ "$RISK" == "high" && "$VERDICT" == "green" ]]; then
   VERDICT="escalate"
   RAISONS+=("politique:decision-humaine-Q3")
+fi
+# (2026-09-24, O29) Risque Q3 accepte par un humain pour ce travail : reprise
+# vers la revue. Une violation P13 a deja fait escalader plus haut : elle n'est
+# jamais couverte (le verdict n'est alors pas vert, la ligne ci-dessus ne joue pas).
+if [[ -f "$DEPASSEMENTS_ACCEPTES" ]] && grep -qx risque "$DEPASSEMENTS_ACCEPTES" \
+   && [[ "${RAISONS[*]:-}" == *politique:decision-humaine-Q3* ]] && (( ${#FAUTIFS[@]} == 0 )); then
+  RAISONS_SANS_Q3=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == politique:decision-humaine-Q3 ]] || RAISONS_SANS_Q3+=("$r"); done
+  RAISONS=("${RAISONS_SANS_Q3[@]+"${RAISONS_SANS_Q3[@]}"}" "politique:Q3-acceptee-humain")
+  VERDICT="green"
+  log "Risque Q3 accepte par un humain pour ce travail"
 fi
 
 # --- 3 bis. Preuve des tests pour verify-evidence (2026-09-21) ------------

@@ -40,7 +40,15 @@ for f in "$ETAT_DIR"/taches/*.env; do
   ETAT="$(sed -n 's/^etat=//p' "$f" | head -1)"
   BRANCHE="$(sed -n 's/^branche=//p' "$f" | head -1)"
 
-  [[ "$ETAT" == "PUBLISHED" ]] || continue
+  # AVANT :   [[ "$ETAT" == "PUBLISHED" ]] || continue
+  #   (2026-09-27, O47) Une tache restee PARKED (fausse P9, escalade en cours)
+  #   dont un humain a fusionne la PR sur GitHub n'etait jamais rapprochee :
+  #   T-004 d'iziGSM a ete regularisee a la main. Decision de l'operateur : PR
+  #   fusionnee => PUBLISHED puis DONE, par le chemin normal ci-dessous (preuves
+  #   P16 a fournir comprises) ; l'escalade ouverte passe « sans_objet » a la
+  #   passe suivante (K14). Une PR ouverte ou fermee ne change rien pour une
+  #   tache PARKED. Test PR2.
+  [[ "$ETAT" == "PUBLISHED" || "$ETAT" == "PARKED" ]] || continue
   [[ -n "$BRANCHE" ]] || continue
 
   if (( DRY_RUN == 1 )); then
@@ -49,8 +57,19 @@ for f in "$ETAT_DIR"/taches/*.env; do
   fi
 
   PR_STATE="$(gh pr view "$BRANCHE" --json state,mergedAt --jq '.state' 2>/dev/null || echo INCONNU)"
+  if [[ "$ETAT" == "PARKED" ]]; then
+    [[ "$PR_STATE" == "MERGED" ]] || continue
+    transition_etat "$f" PUBLISHED reconcile-O47 || { log "transition refusee : $TASK_ID PARKED -> PUBLISHED"; continue; }
+    log "$TASK_ID : PARKED, mais PR fusionnee sur GitHub -> PUBLISHED (O47)"
+  fi
   case "$PR_STATE" in
     MERGED)
+      # (2026-09-25, ADR 0003 R3) DONE = controles verts ET preuves soldees : une
+      # preuve encore a fournir retient la tache PUBLISHED. Test PV5.
+      if jq -e '[.[]? | select(.statut == "a_fournir")] | length > 0' "$STATE_DIR/$TASK_ID.preuves.json" >/dev/null 2>&1; then
+        log "$TASK_ID : PR fusionnee, mais preuve(s) a fournir — reste PUBLISHED, pas de DONE"
+        continue
+      fi
       transition_etat "$f" DONE reconcile || log "transition refusee : $TASK_ID -> DONE"
       log "$TASK_ID : PR fusionnee -> DONE"
       ;;

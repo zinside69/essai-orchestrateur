@@ -11,9 +11,25 @@
   "seuils_revue": {
     "confiance_min_accord": 0.75
   },
+  "couts": {
+    "_commentaire": "2026-09-22 (defaut 7) : seuils d'alerte du cout des agents, lus par couts.sh. Alerte seulement : aucun agent n'est arrete (decision de l'operateur). Cout = tarif public calcule par Claude Code.",
+    "_commentaire_prix": "2026-09-28 (O49) : tarifs publics en USD par million de tokens, page https://docs.claude.com/en/docs/about-claude/pricing lue le 2026-09-28. Cache ecrit au tarif 1 h, celui qu'applique Claude Code (revue de T-004 du 27/09 : 1,674233 $ recalcules exactement). couts.sh signale tout appel dont le cout annonce s'ecarte de plus de ecart_prix_max du cout attendu.",
+    "ecart_prix_max": 0.15,
+    "prix_reference": {
+      "claude-sonnet-5": {"entree": 2.0, "cache_lu": 0.2, "cache_ecrit": 4.0, "sortie": 10.0},
+      "claude-opus-5-5": {"entree": 4.0, "cache_lu": 0.2, "cache_ecrit": 8.0, "sortie": 20.0}
+    },
+    "tache_ambre_usd": 1.0,
+    "tache_rouge_usd": 3.0,
+    "jour_ambre_usd": 10.0,
+    "jour_rouge_usd": 25.0
+  },
   "revue": {
-    "modele_auteur": "sonnet",
-    "modele_reviewer": "opus",
+    "_commentaire_corrections_max": "2026-09-27 (O48, doctrine de depart) : nombre de corrections automatiques qu'un desaccord du relecteur peut demander a l'agent avant de passer la main a l'humain (PR a relire). Decision de l'operateur : 2, soit au plus 3 passages de l'agent. Remis a zero par toute consigne humaine.",
+    "corrections_max": 2,
+    "_commentaire_o49": "2026-09-28 (O49) : identifiants exacts, ceux servis le 2026-09-27 (23 appels mesures). AVANT : \"modele_auteur\": \"sonnet\", \"modele_reviewer\": \"opus\" — un alias change de modele sans decision le jour ou il bouge.",
+    "modele_auteur": "claude-sonnet-5",
+    "modele_reviewer": "claude-opus-5-5",
     "max_turns": 12,
     "permission_mode": "plan"
   },
@@ -81,6 +97,8 @@
     }
   },
   "machine_etats": {
+    "_commentaire": "2026-09-22 (O11, reponse republier) : PUBLISHED ajoute aux sorties de PARKED et BLOCKED. AVANT : \"PARKED\": [\"READY\", \"RUNNING\", \"FAILED\", \"BLOCKED\", \"ESCALATED\"] et \"BLOCKED\": [\"READY\", \"RUNNING\", \"FAILED\"]. Une publication ratee (P9) laisse la tache PARKED ; republier la publie sans relancer l'agent.",
+    "_commentaire_o48": "2026-09-27 (O48, boucle de correction) : RUNNING ajoute aux sorties de REVIEWED — un desaccord du relecteur renvoie l'agent corriger. AVANT : \"REVIEWED\": [\"PUBLISHED\", \"PARKED\", \"BLOCKED\"].",
     "etats": ["PENDING", "READY", "RUNNING", "VERIFIED", "REVIEWED", "PUBLISHED", "DONE", "RED", "FAILED", "PARKED", "BLOCKED", "ESCALATED"],
     "initial": "PENDING",
     "terminaux": ["DONE", "BLOCKED"],
@@ -89,13 +107,13 @@
       "READY": ["RUNNING", "PARKED"],
       "RUNNING": ["VERIFIED", "RED", "FAILED", "PARKED"],
       "VERIFIED": ["REVIEWED", "PARKED"],
-      "REVIEWED": ["PUBLISHED", "PARKED", "BLOCKED"],
+      "REVIEWED": ["PUBLISHED", "PARKED", "BLOCKED", "RUNNING"],
       "PUBLISHED": ["DONE", "ESCALATED", "PARKED"],
       "RED": ["RUNNING", "PARKED"],
       "FAILED": ["RUNNING", "PARKED", "BLOCKED"],
-      "PARKED": ["READY", "RUNNING", "FAILED", "BLOCKED", "ESCALATED"],
+      "PARKED": ["READY", "RUNNING", "FAILED", "BLOCKED", "ESCALATED", "PUBLISHED"],
       "ESCALATED": ["PARKED", "BLOCKED"],
-      "BLOCKED": ["READY", "RUNNING", "FAILED"],
+      "BLOCKED": ["READY", "RUNNING", "FAILED", "PUBLISHED"],
       "DONE": []
     }
   },

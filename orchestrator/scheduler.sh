@@ -7,7 +7,9 @@ set -Eeuo pipefail
 source "$(dirname "$0")/lib.sh"
 
 ETAT_DIR="$ORCH_DIR/etat"
-E="$ROOT/orchestrator/escalade.json"
+# (2026-09-23, O24) Meme politique que escalade.sh, meme surcharge.
+# AVANT : E="$ROOT/orchestrator/escalade.json"
+E="${ORCH_ESCALADE:-$ROOT/orchestrator/escalade.json}"
 PARALLELE="${PARALLELE:-2}"
 INVENTAIRE=0
 BOUCLE=0
@@ -113,13 +115,56 @@ count_running() {
   printf '%s\n' "$n"
 }
 
+# (2026-09-22, essai de publication, defaut 9) reconcile.sh est le seul a passer
+# une tache PUBLISHED a DONE quand sa PR est fusionnee — mais personne ne
+# l'appelait : aucune dependance ne se debloquait jamais. Lance a chaque passe,
+# depuis la racine (gh deduit le depot du dossier courant). Sans gh ni remote,
+# rien a verifier : on le dit, et le planificateur continue. Test Y5.
+reconcilier() {
+  if ! git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+    log "reconcile : pas de remote origin — aucune PR a verifier"
+    return 0
+  fi
+  if (( DRY_RUN == 0 )) && ! command -v gh >/dev/null 2>&1; then
+    log "reconcile : gh absent — les PR fusionnees ne passeront pas DONE"
+    return 0
+  fi
+  local opt=()
+  (( DRY_RUN == 1 )) && opt=(--dry-run)
+  ( cd "$ROOT" && "$ROOT/orchestrator/reconcile.sh" "${opt[@]}" ) >>"$LOG_DIR/reconcile.log" 2>&1 \
+    || log "reconcile : echec (voir $LOG_DIR/reconcile.log)"
+}
+
+# (2026-09-23, O21) Personne n'appelait « escalade.sh --verifier-expirations » :
+# les escalades n'expiraient jamais, les relances ne partaient jamais (M09 = 0.0),
+# le disjoncteur L4, evalue au meme endroit, jamais non plus. Lance a chaque passe,
+# AVANT le controle de PAUSE : c'est quand le pipeline attend un humain que les
+# relances comptent. Rendu possible par O20 (une tache DONE ou PUBLISHED n'est plus
+# touchee) et le defaut 54 (passe menee a son terme). Un echec ne bloque pas le
+# planificateur : il est journalise, comme reconcile. Test Y10.
+verifier_expirations() {
+  local opt=()
+  (( DRY_RUN == 1 )) && opt=(--dry-run)
+  "$ROOT/orchestrator/escalade.sh" "${opt[@]}" --verifier-expirations >>"$LOG_DIR/expirations.log" 2>&1 \
+    || log "expirations : echec (voir $LOG_DIR/expirations.log)"
+}
+
 run_once() {
   local G="$ETAT_DIR/graphe.json" MANIFESTE_SHA GRAPHE_SHA EN_COURS PLACES
 
+  verifier_expirations
   if [[ -f "$STATE_DIR/planificateur" ]] && grep -q '^PAUSE' "$STATE_DIR/planificateur"; then
     log "DISJONCTEUR ACTIF — planificateur en PAUSE. Aucune nouvelle tache lancee."
     return 0
   fi
+
+  reconcilier
+  # (2026-09-22, defaut 9) Le graphe lit l'etat des taches a la compilation : il
+  # n'etait recompile que si todo.md changeait, si bien qu'une tache passee DONE
+  # ne liberait pas sa dependante — et qu'une tache FAILED restait « eligible »
+  # sur un graphe perime (T-001 relancee seule a l'essai 2). Recompile a chaque
+  # passe ; le controle d'empreinte ci-dessous reste, desormais toujours d'accord.
+  "$ROOT/orchestrator/graphe.sh" "$ROOT/todo.md" >/dev/null || die "recompilation impossible"
 
   MANIFESTE_SHA="$(sha256sum "$ROOT/todo.md" | awk '{print $1}')"
   GRAPHE_SHA="$(jq -r '.manifeste_sha256' "$G" 2>/dev/null || echo absent)"
@@ -146,6 +191,21 @@ run_once() {
   [[ ${#CANDIDATES[@]} -gt 0 ]] || { log "Aucune tache eligible"; return 0; }
 
   RETENUES=()
+  # (2026-09-23, essai de bout en bout, defaut 52) Les conflits n'etaient
+  # verifies qu'entre les taches retenues dans la MEME passe. T-006 est partie
+  # pendant que T-005, en conflit avec elle, tournait encore : sur une
+  # integration sans le code de T-005, sa PR est ressortie CONFLICTING. Un
+  # conflit tient desormais tant que la rivale a commence sans etre terminee —
+  # tout etat hors PENDING, READY, DONE, FAILED : en cours, en revue, publiee
+  # mais pas encore fusionnee, ou suspendue avec du travail sur sa branche.
+  EN_COURS=()
+  for f_ec in "$ETAT_DIR"/taches/*.env; do
+    [[ -f "$f_ec" ]] || continue
+    case "$(sed -n 's/^etat=//p' "$f_ec" | head -1)" in
+      PENDING|READY|DONE|FAILED|'') ;;
+      *) EN_COURS+=("$(basename "$f_ec" .env)") ;;
+    esac
+  done
   for t in "${CANDIDATES[@]}"; do
     [[ -z "$t" ]] && continue
     conflit=0
@@ -158,11 +218,29 @@ run_once() {
         conflit=1
       fi
     done
+    for r in "${EN_COURS[@]:-}"; do
+      [[ -z "$r" || "$r" == "$t" ]] && continue
+      if jq -e --arg t "$t" --arg r "$r" '((.noeuds[$t].conflits // []) | index($r)) or ((.noeuds[$r].conflits // []) | index($t))' "$G" >/dev/null; then
+        conflit=1
+        log "$t attend : en conflit avec $r, commencee et pas encore terminee (defaut 52)"
+      fi
+    done
     (( conflit == 0 )) && RETENUES+=("$t")
   done
 
   for t in "${RETENUES[@]:-}"; do
     [[ -z "$t" ]] && continue
+    # (2026-09-27, O12) Un essai a blanc n'ecrit aucune trace d'execution. La
+    # transition READY -> RUNNING etait ecrite avant le test DRY_RUN plus bas : le
+    # journal gardait un lancement qui n'avait pas eu lieu, la fiche restait
+    # RUNNING sans pipeline. On annonce et on passe, avant fiche, memoire et
+    # transition. Le test DRY_RUN plus bas n'est plus atteint en --dry-run ; il
+    # reste en place (regle additive). La recompilation du graphe (cache derive
+    # de todo.md) a toujours lieu. Test SD1.
+    if (( DRY_RUN == 1 )); then
+      printf '[DRY-RUN scheduler] pipeline.sh %s\n' "$t"
+      continue
+    fi
     ensure_env_file "$t"
     inject_memoire "$t"
     # Transition gardee READY -> RUNNING (Phase 5 / P3-a)
