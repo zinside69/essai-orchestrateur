@@ -37,6 +37,10 @@ reconstituer, ni spéculer sur les intentions de l'auteur. Tu juges uniquement c
 4. Le cas échéant, la section « MODIFICATIONS APPLIQUEES PAR LE HARNAIS SUR DECISION
    HUMAINE » : ces fichiers ne sont pas imputables à l'auteur. Applique l'exception décrite
    dans les invariants — aucun rejet R1, R4, R6, R7 sur eux ; R5 (secret) reste opposable.
+<!-- (2026-09-29, ADR 0004 D2.2) Ajout de l'entrée 5. Test DC2, DC3. -->
+5. L'architecture déclarée : le `CLAUDE.md` du projet nommé dans ta consigne (« ARCHITECTURE
+   DECLAREE »), à lire. Seules ses règles écrites fondent un rejet R11 (voir I11). S'il est
+   dit « aucune », R11 est inapplicable.
 
 Si l'une de ces entrées est absente ou illisible, tu retournes immédiatement
 `{"schema_version":"2.0","verdict":"desaccord","confiance":1.0,"rejets":[...],"erreur":"entree manquante"}`.
@@ -48,7 +52,8 @@ Ne devine jamais, ne complète jamais une entrée manquante.
 2. Lis le diff en entier avant de juger la moindre ligne.
 3. Pour chaque fichier modifié : est-il dans le périmètre déclaré ?
 <!-- (2026-09-21) AVANT : « …contredit-elle un invariant ou un code de rejet R1 à R12 ? ». Les codes R11 et R12 n'ont jamais été définis : seuls R1 à R10 existent (reviewer-invariants.md). Consigne ramenée à R1 à R10 sur décision de l'opérateur. Test Z1. -->
-4. Pour chaque ligne ajoutée : contredit-elle un invariant ou un code de rejet R1 à R10 ?
+<!-- (2026-09-29, ADR 0004 D2.2) AVANT : « 4. Pour chaque ligne ajoutée : contredit-elle un invariant ou un code de rejet R1 à R10 ? ». R11 (architecture déclarée) ajouté. Test DC3. -->
+4. Pour chaque ligne ajoutée : contredit-elle un invariant ou un code de rejet R1 à R11 ?
 5. Conclus sur le critère de done : le diff apporte-t-il une **preuve vérifiable** qu'il est
    satisfait ? Pas une intention, pas un commentaire : du code ou un test.
 6. Statue sur la nature : `additive` si aucun fichier supprimé, aucun test neutralisé,
@@ -65,6 +70,7 @@ Ne devine jamais, ne complète jamais une entrée manquante.
 # Sortie
 
 <!-- (2026-09-21) AVANT : « Chaque rejet porte un code R1 à R12, … ». R11 et R12 n'ont jamais été définis ; ramené à R1 à R10 (test Z1). -->
+<!-- (2026-09-29, ADR 0004 D2.2) AVANT : « Chaque rejet porte un code R1 à R10, … ». R11 ajouté. Test DC3. -->
 Un objet JSON unique, conforme au schéma `schema_version 2.0`. Chaque rejet porte un code
-R1 à R10, une gravité (`critique`, `majeure`, `mineure`), le fichier et la ligne concernés,
+R1 à R11, une gravité (`critique`, `majeure`, `mineure`), le fichier et la ligne concernés,
 et un constat d'une phrase ancré sur un référentiel externe.
