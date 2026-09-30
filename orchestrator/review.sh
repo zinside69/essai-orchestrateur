@@ -49,6 +49,15 @@ git -C "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
 
 # --- Prompt : diff + déclaration de tâche + invariants. Rien d'autre -------
 mapfile -t T < <(parse_task "$TASK_ID")
+# (2026-09-29, ADR 0004 D2.2) Architecture declaree : le CLAUDE.md du worktree
+# (fichier critique : un agent qui l'aurait touche est deja arrete en P13). Le
+# relecteur le lit (outil Read) et n'y oppose que des regles ECRITES (I11, R11).
+# Sans CLAUDE.md, R11 est dit inapplicable. Test DC2.
+if [[ -f "$WT/CLAUDE.md" ]]; then
+  ARCHITECTURE_DECLAREE="ARCHITECTURE DECLAREE : $WT/CLAUDE.md (seules ses règles écrites fondent un R11, citées mot pour mot)"
+else
+  ARCHITECTURE_DECLAREE="ARCHITECTURE DECLAREE : aucune (pas de CLAUDE.md dans le projet) — R11 inapplicable"
+fi
 
 # (2026-09-23, essai de bout en bout, O23) Le prompt ouvrait sur la ligne
 # AVANT : FICHIER DE DIFF : $DIFF
@@ -67,6 +76,8 @@ DÉCLARATION DE TÂCHE
 $(
   for kv in "${T[@]}"; do printf '%s = %s\n' "${kv%%=*}" "${kv#*=}"; done
 )
+
+${ARCHITECTURE_DECLAREE}
 
 RAPPEL : tu ne connais pas la session qui a produit ce diff et tu ne dois pas chercher
 à la reconstituer. Juge uniquement le contenu du diff contre ce qui précède.
@@ -112,6 +123,12 @@ ne confirme pas est un rejet.
 \`\`\`json
 $CR_TEXTE
 \`\`\`"
+# (2026-09-29, ADR 0004 D5, O5) Skills reellement appeles par l'auteur, releves
+# par le harnais (run-task.sh) : pour information, aucun rejet ne s'y fonde.
+SKILLS_INV="$(sed -n 's/^skills_invoques=//p' "$STATE_DIR/$TASK_ID.state" 2>/dev/null | tail -1 || true)"
+PROMPT="$PROMPT
+
+SKILLS INVOQUES PAR L AUTEUR : ${SKILLS_INV:-aucun} (relevé du harnais, pour information : ne fonde aucun rejet)"
 if [[ -s "$STATE_DIR/$TASK_ID.demandes-appliquees" ]]; then
   PROMPT="$PROMPT
 

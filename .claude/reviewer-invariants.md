@@ -15,6 +15,21 @@ obligatoirement par un code de rejet.
 | I8 | Aucune gestion d'erreur supprimée ni catch vide | R10 |
 | I9 | Le diff reste dans le périmètre déclaré | R1 |
 | I10 | Le critère de done est prouvé par le diff | R2 |
+| I11 | Le diff respecte l'architecture et les conventions écrites dans le CLAUDE.md du projet | R11 |
+
+<!-- (2026-09-29, ADR 0004 D2.2) Ajout de I11 et de la section ci-dessous. Test DC3. -->
+## I11 — architecture déclarée par le projet
+
+Ta consigne nomme le `CLAUDE.md` du projet (« ARCHITECTURE DECLAREE »). Lis-le.
+
+- Un rejet **R11** ne se fonde que sur une règle **écrite** dans ce fichier (architecture,
+  couches, conventions de code) : le constat la cite **mot pour mot**, avec la ligne du diff
+  qui l'enfreint.
+- R11 **jamais sur le goût** ni sur une préférence non écrite : ce ne serait pas de la
+  conformité (voir « Interdits » de ta définition).
+- Une nouvelle abstraction que l'auteur ne justifie pas dans les `ecarts` de son compte
+  rendu, alors qu'une règle écrite la vise, est un R11.
+- Consigne « ARCHITECTURE DECLAREE : aucune » : R11 est inapplicable, n'en émets aucun.
 
 <!-- (2026-09-25, O37) Ajout : sur T-002 (iziGSM), le relecteur a rejeté en R6 et R1 la migration et CLAUDE.md appliquées par le harnais sur décision humaine, faute d'exception écrite ici. Test Z5. -->
 ## Seule exception : les modifications appliquées par le harnais
