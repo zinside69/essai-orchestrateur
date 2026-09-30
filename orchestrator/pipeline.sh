@@ -86,6 +86,39 @@ if [[ "$BRANCHE_RACINE" == "$INTEGRATION_BRANCH" ]]; then
   exit 32
 fi
 
+# 0-. Installation (2026-09-29, ADR 0004 D4) — si le projet l'a activee
+# ("installation": true dans gates.json). Sans docs/agents/issue-tracker.md,
+# l'agent ne part pas : escalade P18 (L3), aucun appel payant, avant le controle
+# des coutures (sans installation, le reste n'a pas de sens). Tests IN1 a IN3.
+MOTIF_INSTALLATION="$(installation_incomplete)"
+if [[ -n "$MOTIF_INSTALLATION" ]]; then
+  transition PARKED
+  ESC_IN="$STATE_DIR/$TASK_ID.escalade-installation.json"
+  jq -nc --arg m "$MOTIF_INSTALLATION" \
+    '{raisons: ["P18:" + $m],
+      detail: "Installation incomplete (ADR 0004) : docs/agents/issue-tracker.md absent de la branche d integration ; le skill code-review en a besoin. Geste : dans le projet, lancer une fois le skill setup-matt-pocock-skills (session humaine), commiter le fichier sur integration, puis repondre approuver (relance)."}' >"$ESC_IN"
+  "$D/escalade.sh" "$TASK_ID" "$ESC_IN" || true
+  log "$TASK_ID : installation incomplete — agent non lance (P18)"
+  exit 20
+fi
+
+# 0a. Coutures a tester (2026-09-29, ADR 0004 D3) — si le projet l'a active
+# ("coutures": true dans gates.json). Sans ticket cite par le critere, ou sans
+# section « Coutures a tester » non vide, l'agent ne part pas : escalade P18 (L3),
+# aucun appel payant. L'humain complete le ticket puis « approuver » (relance).
+# Tests CT1 a CT5.
+MOTIF_COUTURES="$(coutures_manquantes "$TASK_ID")"
+if [[ -n "$MOTIF_COUTURES" ]]; then
+  transition PARKED
+  ESC_CT="$STATE_DIR/$TASK_ID.escalade-coutures.json"
+  jq -nc --arg m "$MOTIF_COUTURES" \
+    '{raisons: ["P18:coutures(" + $m + ")"],
+      detail: "Ticket sans section « Coutures à tester » non vide (ADR 0004) : le critere de done doit citer le fichier du ticket, et ce ticket nommer les points ou les tests observent le comportement. Geste : completer le ticket sur la branche d integration, puis repondre approuver (relance)."}' >"$ESC_CT"
+  "$D/escalade.sh" "$TASK_ID" "$ESC_CT" || true
+  log "$TASK_ID : coutures a tester manquantes ($MOTIF_COUTURES) — agent non lance (P18)"
+  exit 20
+fi
+
 # 0. Relecture de conception (2026-09-25, ADR 0003 R1, O39) — si le projet l'a
 # activee ("conception": true dans gates.json). Un doute (ou une relecture en
 # panne, ou illisible) ne laisse jamais partir l'agent : escalade P15 (L3) avec
@@ -206,6 +239,21 @@ if (( rcg != 0 )); then
         '{raisons: ["P14:max-turns"],
           detail: ("Agent coupe a " + $n + " tours, avant la fin : travail partiel garde sur sa branche, controles non lances. approuver = reprendre sa session (meme plafond) ; plafond plus haut = max_tours=N dans la fiche de la tache, puis approuver ; ticket trop gros = le decouper.")}' >"$ESC_TOURS"
       "$D/escalade.sh" "$TASK_ID" "$ESC_TOURS" || true ;;
+    34)
+      # (2026-09-29, ADR 0004 D1.3) L'agent a commite lui-meme malgre la consigne
+      # et le hook guard-git : P13:commit-agent (L4 par escalade.json), branche en
+      # quarantaine, rien publie. Quarantaine : memes lignes que le cas 20,
+      # dupliquees et non deplacees (regle additive). Tests GG3, GG4.
+      transition PARKED
+      QUAR="quarantine/$TASK_ID"
+      git -C "$ROOT" rev-parse -q --verify "refs/heads/$QUAR" >/dev/null && QUAR="quarantine/$TASK_ID-$(date -u +%Y%m%dT%H%M%S)"
+      git -C "$ROOT" branch "$QUAR" "$AGENT_BRANCH_PREFIX/$TASK_ID" \
+        && log "$TASK_ID : branche de l'agent mise en quarantaine ($QUAR) — commit de l'agent"
+      ESC_COMMIT="$STATE_DIR/$TASK_ID.escalade-commit.json"
+      jq -nc --arg c "$(sed -n 's/^commit_agent=//p' "$STATE_DIR/$TASK_ID.state" 2>/dev/null | head -1)" \
+        '{raisons: ["P13:commit-agent"],
+          detail: ("L agent a commite lui-meme (" + $c + ") malgre la consigne (ADR 0004) : rien n est publie, branche en quarantaine. nettoyer = le harnais garde le travail en un seul commit a lui, meme contenu, puis relance les controles sans agent ; relancer = nouvel essai de l agent ; refuser = abandon.")}' >"$ESC_COMMIT"
+      "$D/escalade.sh" "$TASK_ID" "$ESC_COMMIT" || true ;;
     31)
       # (2026-09-24, O1) Depot non approuve dans Claude Code : rien n'a tourne,
       # rien n'a coute. Meme escalade P10 qu'une panne, mais l'alerte dit le geste

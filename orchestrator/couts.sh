@@ -67,6 +67,8 @@ if os.path.exists(matrice_p):
 # (2026-09-28, O49) Tarifs de reference (matrice.json, couts.prix_reference) :
 # le cout annonce de chaque appel est confronte au cout attendu ; un appel a
 # plusieurs modeles, ou a un modele absent de la table, n'est pas juge. Test MD4.
+# (2026-09-29, O50) Depuis O50, un passage porte le detail par modele : chaque
+# modele est juge (plus de « plusieurs modeles, non juge ») ; voir plus bas.
 prix, ecart_max = {}, 0.15
 if os.path.exists(matrice_p):
     bloc_prix = json.load(open(matrice_p, encoding='utf-8')).get('couts', {})
@@ -121,6 +123,24 @@ for l in lignes:
 ecarts_prix, non_juges = [], 0
 for l in lignes:
     if l.get('mesure') != 'ok':
+        continue
+    # (2026-09-29, O50) Ligne avec le detail par modele du passage (par_modele,
+    # ecrit par journaliser_cout depuis O50) : chaque modele est juge sur ses propres
+    # tokens et son propre cout ; un modele absent de la table n'est pas juge. Les
+    # lignes plus anciennes gardent le jugement d'avant. Test CS2.
+    pm = l.get('par_modele')
+    if isinstance(pm, dict) and pm:
+        for mod, v in sorted(pm.items()):
+            if mod not in prix:
+                non_juges += 1
+                continue
+            attendu = sum(nombre(v.get(k)) * nombre(prix[mod].get(k))
+                          for k in ('entree', 'cache_lu', 'cache_ecrit', 'sortie')) / 1e6
+            annonce = nombre(v.get('cout_usd'))
+            if attendu > 0 and abs(annonce - attendu) / attendu > ecart_max:
+                ecarts_prix.append({'tache': l.get('tache', '?'), 'role': l.get('role', '?'), 'modele': mod,
+                                    'annonce_usd': round(annonce, 6), 'attendu_usd': round(attendu, 6),
+                                    'ecart_pct': round(100 * (annonce - attendu) / attendu, 1)})
         continue
     m = l.get('modeles') or []
     if len(m) != 1 or m[0] not in prix:

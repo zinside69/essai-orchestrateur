@@ -146,17 +146,43 @@ transition_etat() {
 # (agent coupe) : « mesure absente », cout 0 — un trou visible, pas un oubli.
 # Le cout est celui calcule par Claude Code (base « list » = tarif public, ce
 # n'est pas ce qui est facture sous abonnement). Tests N1 a N3.
+#
+# (2026-09-29, O50) total_cost_usd et modelUsage sont CUMULES sur la session, et
+# run-task.sh reprend la session de l'auteur (--resume) ; « usage » ne compte que le
+# passage. Chaque ligne garde donc le cumul de sa session (cumul_session) et compte
+# la difference avec la ligne precedente de la meme session : cout_usd = cout du
+# passage, par_modele = tokens et cout de chaque modele pour ce passage. Additionner
+# les cumuls comptait les passages precedents plusieurs fois (auteur de T-004 d'iziGSM,
+# 27/09 : session de 18,19 $, comptee 48,40 $). Premier passage d'une session : difference
+# avec zero, comme avant. Test CS1.
 journaliser_cout() {
-  local tache="$1" role="$2" src="$3" ligne=""
+  # AVANT :   local tache="$1" role="$2" src="$3" ligne=""
+  local tache="$1" role="$2" src="$3" ligne="" session="" precedent="null"
   mkdir -p "$ORCH_DIR/journal"
   if [[ -f "$src" ]]; then
-    ligne="$(jq -cRn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" '
+    session="$(jq -rRn '[inputs | fromjson? | objects | select(.type == "result")] | last | .session_id // empty' "$src" 2>/dev/null || true)"
+    if [[ -n "$session" && -f "$ORCH_DIR/journal/couts.jsonl" ]]; then
+      precedent="$(jq -c --arg s "$session" 'select(.session == $s) | .cumul_session // empty' \
+        "$ORCH_DIR/journal/couts.jsonl" 2>/dev/null | tail -1)"
+      [[ -n "$precedent" ]] || precedent="null"
+    fi
+    # AVANT :     ligne="$(jq -cRn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" '
+    ligne="$(jq -cRn --arg t "$tache" --arg r "$role" --arg ts "$(date -u +%FT%TZ)" --argjson prec "$precedent" '
       ([inputs | fromjson? | objects | select(.type == "result")] | last) as $res
       | if $res == null then
           {ts:$ts, tache:$t, role:$r, mesure:"absente", cout_usd:0}
         else
-          {ts:$ts, tache:$t, role:$r, mesure:"ok",
-           cout_usd: ($res.total_cost_usd // 0),
+          (($res.modelUsage // {}) | with_entries(.value |= {entree: (.inputTokens // 0), cache_lu: (.cacheReadInputTokens // 0),
+            cache_ecrit: (.cacheCreationInputTokens // 0), sortie: (.outputTokens // 0), cout_usd: (.costUSD // 0)})) as $cum
+          | (($prec // {}).par_modele // {}) as $pm
+          | ($cum | with_entries(.key as $m | .value |= with_entries(.key as $k | .value -= ((($pm[$m] // {})[$k]) // 0)))
+                  | with_entries(select([.value[]] | any(. > 0)))) as $delta
+          # AVANT :           {ts:$ts, tache:$t, role:$r, mesure:"ok",
+          | {ts:$ts, tache:$t, role:$r, mesure:"ok",
+           # AVANT : cout_usd: ($res.total_cost_usd // 0),
+           cout_usd: (($res.total_cost_usd // 0) - (($prec // {}).cout_usd // 0)),
+           cout_cumule_usd: ($res.total_cost_usd // 0),
+           session: ($res.session_id // ""),
            tours: ($res.num_turns // 0),
            duree_ms: ($res.duration_ms // 0),
            tokens: {entree: ($res.usage.input_tokens // 0),
@@ -164,7 +190,12 @@ journaliser_cout() {
                     cache_ecrit: ($res.usage.cache_creation_input_tokens // 0),
                     sortie: ($res.usage.output_tokens // 0),
                     reflexion: ($res.usage.output_tokens_details.thinking_tokens // 0)},
-           modeles: (($res.modelUsage // {}) | keys),
+           # AVANT : modeles: (($res.modelUsage // {}) | keys),
+           # (O50) Modeles de CE passage ; sans aucun chiffre par modele (faux claude
+           # des tests), tous ceux declares, comme avant.
+           modeles: (if ($delta | length) > 0 then ($delta | keys) else ($cum | keys) end),
+           par_modele: $delta,
+           cumul_session: {cout_usd: ($res.total_cost_usd // 0), par_modele: $cum},
            base: ([($res.modelUsage // {})[] | .costBasis? // empty] | unique | join(","))}
         end' "$src" 2>/dev/null)" || ligne=""
   fi
@@ -215,6 +246,40 @@ actions_ntfy() {
 # manifeste : perimetre, critere, controles). Un verdict de conception, ou une
 # decision humaine de passer outre, ne vaut que pour CETTE declaration : la
 # modifier fait relire la conception. Tests CO1, CO4.
+# installation_incomplete — (2026-09-29, ADR 0004 D4) si "installation": true dans
+# gates.json : rend « installation-incomplete » quand docs/agents/issue-tracker.md
+# manque (exige par le skill code-review, ecrit une fois par projet par un humain
+# avec setup-matt-pocock-skills), rien sinon ou si le controle n'est pas active.
+# Lu sur la branche d'integration (ce que l'agent verra), sinon sur le disque.
+# Tests IN1 a IN3.
+installation_incomplete() {
+  local g="$ROOT/orchestrator/gates.json" f="docs/agents/issue-tracker.md"
+  { [[ -f "$g" ]] && jq -e '.installation == true' "$g" >/dev/null 2>&1; } || return 0
+  git -C "$ROOT" cat-file -e "$INTEGRATION_BRANCH:$f" 2>/dev/null && return 0
+  [[ -s "$ROOT/$f" ]] && return 0
+  printf 'installation-incomplete\n'
+}
+
+# coutures_manquantes <T-NNN> — (2026-09-29, ADR 0004 D3) si "coutures": true dans
+# gates.json : rend « ticket-absent » ou « section-absente », rien si tout va bien
+# ou si le controle n'est pas active (decision de l'operateur : active par projet).
+# Ticket = premier *.md du critere (meme regle que publisher.sh), lu sur la branche
+# d'integration (ce que l'agent verra), sinon sur le disque. Section = titre
+# « Coutures a tester » (casse et accent libres) suivi d'au moins une ligne non
+# vide avant le titre suivant. Tests CT1 a CT4.
+coutures_manquantes() {
+  local g="$ROOT/orchestrator/gates.json" critere fichier contenu
+  { [[ -f "$g" ]] && jq -e '.coutures == true' "$g" >/dev/null 2>&1; } || return 0
+  critere="$(parse_task "$1" | sed -n 's/^critere=//p' | head -1)"
+  fichier="$(grep -oE '[^ ]+\.md' <<<"$critere" | head -1 || true)"
+  [[ -n "$fichier" ]] || { printf 'ticket-absent\n'; return 0; }
+  contenu="$(git -C "$ROOT" show "$INTEGRATION_BRANCH:$fichier" 2>/dev/null || cat "$ROOT/$fichier" 2>/dev/null || true)"
+  [[ -n "$contenu" ]] || { printf 'ticket-absent\n'; return 0; }
+  awk '/^#+[ \t]/ { t = tolower($0); dans = (t ~ /^#+[ \t]*coutures (a|à|À) tester[ \t]*$/); next }
+       dans && /[^ \t]/ { ok = 1 }
+       END { exit ok ? 0 : 1 }' <<<"$contenu" || printf 'section-absente\n'
+}
+
 empreinte_tache() {
   parse_task "$1" | sha256sum | awk '{print substr($1, 1, 16)}'
 }

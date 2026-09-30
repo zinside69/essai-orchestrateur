@@ -93,6 +93,8 @@ esac
 RAISONS_OUV="$(jq -r --arg t "$TASK_ID" 'select(.tache == $t and .statut == "ouverte") | .raisons' \
   "$JOURNAL_ESC_T" 2>/dev/null | tail -1 || true)"
 VIOLATION=0; [[ "$RAISONS_OUV" == *P13:* ]] && VIOLATION=1
+# (2026-09-29, ADR 0004 D1.3) Violation particuliere : l'agent a commite lui-meme.
+COMMIT_AGENT=0; [[ "$RAISONS_OUV" == *P13:commit-agent* ]] && COMMIT_AGENT=1
 DEMANDE_OUV=0; [[ "$RAISONS_OUV" == *P12:* ]] && DEMANDE_OUV=1
 if [[ "$DECISION_H" == nettoyer || "$DECISION_H" == relancer ]] && (( VIOLATION == 0 )); then
   die "$DECISION_H : aucune violation de la doctrine d'ecriture (P13) ouverte pour $TASK_ID"
@@ -173,6 +175,16 @@ if [[ "$DECISION_H" == approuver ]] && (( CONCEPTION_OUV == 1 )); then
   MODE_APPROUVER="relancer"
   CIBLE="READY"
 fi
+# (2026-09-29, ADR 0004 D3 et D4) Coutures manquantes ou installation incomplete
+# (P18, meme traitement). Ligne d'origine :
+# (2026-09-29, ADR 0004 D3) Coutures manquantes (P18) : aucun travail d'agent
+# n'existe. « approuver » = l'humain a complete le ticket : relance, et le controle
+# des coutures REPASSE avant l'agent. Explicite pour exclure toute publication. Test CT5.
+COUTURES_OUV=0; [[ "$RAISONS_OUV" == *P18:* ]] && COUTURES_OUV=1
+if [[ "$DECISION_H" == approuver ]] && (( COUTURES_OUV == 1 )); then
+  MODE_APPROUVER="relancer"
+  CIBLE="READY"
+fi
 # (2026-09-25, ADR 0003 R3, O40) Preuve a fournir (P16) : la tache est publiee,
 # mise en pause par l'escalade de sa decision. « approuver "vert : ..." » solde
 # les preuves avec ce compte rendu et la ramene PUBLISHED, SANS republier ;
@@ -218,7 +230,11 @@ retirer_fautifs() {
   perim="$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')"
   mapfile -t fautifs < <(cd "$WT_T" && fichiers_fautifs "$WT_T" "$base" HEAD "$perim" \
     "$STATE_DIR/$TASK_ID.demandes-appliquees" | cut -d: -f2-)
-  (( ${#fautifs[@]} > 0 )) || die "$DECISION_H : aucun fichier fautif sur la branche de $TASK_ID"
+  # AVANT :   (( ${#fautifs[@]} > 0 )) || die "$DECISION_H : aucun fichier fautif sur la branche de $TASK_ID"
+  #   (2026-09-29, ADR 0004 D1.3) Sur un commit de l'agent, zero fichier fautif est
+  #   normal : le nettoyage regroupe alors son travail en un seul commit du harnais
+  #   (meme contenu, gestes ci-dessous inchanges). Test GG4.
+  (( ${#fautifs[@]} > 0 || COMMIT_AGENT == 1 )) || die "$DECISION_H : aucun fichier fautif sur la branche de $TASK_ID"
   if [[ "$avec_demandes" == 1 ]]; then
     tmp="$(mktemp)"; printf '[]\n' >"$tmp"
     for f in "${fautifs[@]}"; do
@@ -283,6 +299,7 @@ case "$DECISION_H" in
     retirer_fautifs 1
     REPRISE_SANS_AGENT=1 ;;
   relancer)
+    MESSAGE_H="$MESSAGE"
     retirer_fautifs 0
     MESSAGE="Le harnais a retire tes modifications de fichiers interdits (${FAUTIFS_RETIRES}) : fichiers critiques ou hors perimetre (ADR 0002). Refais la tache sans les toucher ; s'il faut vraiment les modifier, soumets une demande d'ecriture motivee (fichier, besoin, justification, diff exact) dans $COMPTE_RENDU_AGENT et poursuis sans. ${MESSAGE}" ;;
   approuver)
@@ -294,6 +311,12 @@ case "$DECISION_H" in
       REPRISE_SANS_AGENT=1
     fi ;;
 esac
+# (2026-09-29, ADR 0004 D1.3) Relance apres un commit de l'agent sans fichier
+# fautif : la consigne dit la vraie faute (le message ci-dessus parle de fichiers
+# interdits). Place apres le case pour ne toucher a aucune ligne existante.
+if [[ "$DECISION_H" == relancer ]] && (( COMMIT_AGENT == 1 )) && [[ -z "$FAUTIFS_RETIRES" ]]; then
+  MESSAGE="Tu as commite toi-meme (ADR 0004) : le harnais a regroupe ton travail en un seul commit. git est en lecture seule pour toi (status, diff, log, show...) : ne commite jamais, le harnais s'en charge apres les controles. ${MESSAGE_H}"
+fi
 if [[ "$MODE_APPROUVER" == controles ]]; then
   {
     [[ "$RAISONS_OUV" == *quota:depasse* ]] && echo quota

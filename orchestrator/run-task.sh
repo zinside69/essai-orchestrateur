@@ -168,6 +168,8 @@ Gates à passer     : ${TACHE[gates]:-lint,typecheck,test}
 - Toute migration de base ou modification de schéma = arrêt et escalade.
 - Ne touche QUE les fichiers du périmètre ci-dessus. Si tu dois en sortir, arrête-toi.
 - Aucun commit : le harnais commite ton travail sous l'identité de l'agent (O7).
+- Ignore l'étape Commit de tout skill (implement compris) : git en lecture seule
+  (status, diff, log, show…) ; toute autre commande git est refusée (ADR 0004).
 - Tu n'écris AUCUN fichier critique (constitution, socle, configuration, secrets :
   orchestrator/fichiers-critiques.json) ni hors du périmètre (ADR 0002). Si tu en as
   besoin, soumets une demande d'écriture dans $COMPTE_RENDU_AGENT et poursuis sans.
@@ -191,6 +193,34 @@ Gates à passer     : ${TACHE[gates]:-lint,typecheck,test}
 - Chaque test nouveau d'un critère de sûreté : rouge prouvé par mutation — un
   mutant à la fois, restauré, consigné dans ta conclusion (mutation, test, rouge
   vu). Fichier critique : ne le mute pas, demande la mutation (ci-dessus).
+EOF
+# (2026-09-29, ADR 0004 D2.1) La consigne ne disait que les interdits : sur T-004,
+# 25 skills disponibles et aucun appele. Elle dit desormais comment travailler, avec
+# les commandes EXACTES des controles de la tache (gates.json du depot principal,
+# celles que gate.sh jouera), et l'architecture du CLAUDE.md du projet, que le
+# relecteur peut opposer (R11). Test DC1.
+COMMANDES_GATES=""
+IFS=',' read -r -a GATES_TACHE <<<"${TACHE[gates]:-lint,typecheck,test}"
+for GATE_N in "${GATES_TACHE[@]}"; do
+  GATE_N="${GATE_N//[[:space:]]/}"
+  [[ -n "$GATE_N" ]] || continue
+  GATE_C=""
+  [[ -f "$ROOT/orchestrator/gates.json" ]] \
+    && GATE_C="$(jq -r --arg g "$GATE_N" '.gates[$g] // empty' "$ROOT/orchestrator/gates.json" 2>/dev/null || true)"
+  COMMANDES_GATES+="  - $GATE_N : ${GATE_C:-commande non déclarée dans gates.json}"$'\n'
+done
+cat >>"$WT/.claude-task.md" <<EOF
+
+## Méthode (ADR 0004)
+- Une tranche verticale à la fois : un comportement de bout en bout, testé, avant le suivant.
+- Les contrôles que le harnais jouera après toi, commandes exactes :
+${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conclure.
+- Tests aux coutures du ticket, par l'interface publique : jamais tautologiques (un test
+  qui ne peut pas échouer), jamais liés à l'implémentation (détails internes simulés).
+- Architecture : respecte l'architecture et les conventions écrites dans le
+  CLAUDE.md du projet, et les motifs du code voisin (structure, nommage, gestion
+  d'erreur, commentaires). Toute nouvelle abstraction se justifie dans « ecarts » de ton compte
+  rendu. Le relecteur rejette un écart à l'architecture déclarée (R11).
 EOF
 if [[ -n "$CONSIGNE_H" ]]; then
   printf '\n## CONSIGNE DE L'"'"'HUMAIN (prioritaire)\n%s\n' "$CONSIGNE_H" >>"$WT/.claude-task.md"
@@ -227,8 +257,11 @@ rm -f "$STATE_DIR/$TASK_ID.depassements-acceptes"
 #   (2026-09-24, ADR 0002) Deux lignes ajoutees en fin de prompt : la doctrine
 #   d'ecriture et le compte rendu. Sur T-001 (iziGSM), l'agent a redefini dans
 #   CLAUDE.md l'exigence qu'il ne satisfaisait pas, au lieu de s'arreter.
+#   (2026-09-29, ADR 0004 D1.1) Une ligne ajoutee apres « Ne commite pas » : le
+#   skill implement finit par « Commit your work ». Test GG2.
 PROMPT="Lis .claude-task.md et CLAUDE.md, puis implémente la tâche $TASK_ID.
 Vérifie que les gates passent avant de conclure. Ne commite pas : le harnais s'en charge.
+Ignore l'étape Commit de tout skill : git en lecture seule (ADR 0004).
 Si une décision d'architecture, une dépendance, un secret ou une action
 destructive est nécessaire, n'agis pas : explique le blocage et arrête-toi.
 Tu exécutes ; tu n'écris aucun fichier critique ni hors périmètre : si tu en as besoin, mets une
@@ -273,8 +306,18 @@ for m in "${MOTIFS_PERIMETRE[@]}"; do
   m="${m//[[:space:]]/}"
   [[ -n "$m" ]] && AUTORISATIONS+=",Edit(./$m),Write(./$m)"
 done
-REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" \
-  '{hooks:{PreToolUse:[{matcher:"Edit|Write|MultiEdit|NotebookEdit",hooks:[{type:"command",command:$h,timeout:10}]}]}}')"
+# AVANT : REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" \
+# AVANT :   '{hooks:{PreToolUse:[{matcher:"Edit|Write|MultiEdit|NotebookEdit",hooks:[{type:"command",command:$h,timeout:10}]}]}}')"
+#   (2026-09-29, ADR 0004 D1.2) Second matcher Bash : guard-git.sh du depot
+#   principal, git en lecture seule pour l'agent (liste blanche). Test GG2.
+REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" --arg g "'$ROOT/.claude/hooks/guard-git.sh'" \
+  '{hooks:{PreToolUse:[{matcher:"Edit|Write|MultiEdit|NotebookEdit",hooks:[{type:"command",command:$h,timeout:10}]},
+                       {matcher:"Bash",hooks:[{type:"command",command:$g,timeout:10}]}]}}')"
+
+# (2026-09-29, ADR 0004 D1.3) Tete de la branche notee juste avant l'agent,
+# comparee juste apres (avant l'etape 7) : un commit de l'agent se DETECTE, quelle
+# que soit la forme qui a echappe au hook. Test GG3.
+TETE_AVANT="$(git -C "$WT" rev-parse HEAD)"
 
 set +e
 # (2026-09-24, O7) Filet si l'agent commite malgre tout (autre forme de commande
@@ -358,9 +401,27 @@ TOURS="$(jq -r 'select(.type=="result") | .num_turns // empty' "$LOG" 2>/dev/nul
   printf 'cout_usd=%s\n' "${COUT:-0}"
   printf 'tours=%s\n' "${TOURS:-0}"
   printf 'skill_demande=%s\n' "${SKILL_IMPL:-}"
+  # (2026-09-29, ADR 0004 D5, O5) Skills REELLEMENT appeles : chaque tool_use
+  # « Skill » du journal, sans doublon, dans l'ordre. Vide = aucun appel (0 sur
+  # les 6 journaux reels des bacs a sable au 29/09). Tests SK1, SK2.
+  printf 'skills_invoques=%s\n' "$(jq -r 'select(.type=="assistant") | .message.content[]?
+      | select(.type=="tool_use" and .name=="Skill") | .input.skill // empty' "$LOG" 2>/dev/null \
+    | awk '!vu[$0]++' | paste -sd, - || true)"
 } >"$STATE"
 
 log "Session ${SESSION_ID:-inconnue} | coût ${COUT:-0} USD | $TOURS tours"
+
+# (2026-09-29, ADR 0004 D1.3) L'agent a commite lui-meme : le harnais ne commite
+# rien par-dessus (il signerait un historique qu'il n'a pas ecrit) et sort en 34 ;
+# pipeline.sh met la branche en quarantaine et escalade P13:commit-agent (L4).
+# Compte rendu et cout sont deja journalises ci-dessus. Tests GG3, GG4.
+TETE_APRES="$(git -C "$WT" rev-parse HEAD)"
+if [[ "$TETE_APRES" != "$TETE_AVANT" ]]; then
+  printf 'commit_agent=%s..%s\n' "$TETE_AVANT" "$TETE_APRES" >>"$STATE"
+  log "L'agent a commite lui-meme ($TETE_AVANT..$TETE_APRES) : aucun commit du harnais, P13:commit-agent (ADR 0004)"
+  cd "$ROOT"
+  exit 34
+fi
 
 # --- 7. Commit automatique (agent) ---------------------------------------
 cd "$WT"

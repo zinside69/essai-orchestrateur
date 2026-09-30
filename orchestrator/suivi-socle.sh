@@ -211,6 +211,12 @@ etapes = [{'statut': STATUTS[s], 'titre': md(t), 'detail': md(d)}
 priorites = [(c[0], c[1]) for c in (cellules(l) for l in fdr.splitlines() if re.match(r'^\| O\d+ \|', l))]
 ordre = [code for code, _ in priorites]
 prio = dict(priorites)
+# (2026-09-29) Niveaux : lignes « | **A. Nom** | definition | criteres | etat | » du
+# tableau « Niveaux » de la feuille de route. Le verdict les cite, la page les definit. Test V8.
+niveaux = [{'code': m.group(1), 'nom': md(m.group(2)), 'definition': md(c[1]), 'criteres': md(c[2]), 'etat': md(c[3])}
+           for l in fdr.splitlines()
+           for m in [re.match(r'^\| \*\*([A-Z])\. (.+?)\*\* \|', l)] if m
+           for c in [cellules(l)]]
 liste_ouverts = [{'code': code, 'constat': '<br>'.join(ouverts[code]), 'priorite': prio.get(code, 'à classer')}
                  for code in sorted(ouverts, key=lambda k: (ordre.index(k) if k in ordre else len(ordre), int(k[1:])))
                  if code not in resolus]
@@ -231,6 +237,7 @@ print(json.dumps({
     'version_spec': versions[-1]['version'] if versions else '',
     'scripts': int(scripts),
     'verdict': {'titre': md(verdict.group(1)), 'detail': md(verdict.group(2))} if verdict else None,
+    'niveaux': niveaux,
     'etapes': etapes,
     'defauts': {'corriges': total, 'par_version': versions},
     'controles': {'actuel': par_version[-1]['controles'] if par_version else 0, 'par_version': par_version},
