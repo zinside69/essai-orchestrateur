@@ -147,7 +147,17 @@ fi
 # l'agent relance repartait sans elle. Elle entre desormais dans la fiche de
 # tache et dans le prompt, prioritaire, puis est consommee apres la session. Test EC13.
 FICHE_TACHE="$ORCH_DIR/etat/taches/$TASK_ID.env"
-CONSIGNE_H="$(sed -n 's/^consigne_humaine=//p' "$FICHE_TACHE" 2>/dev/null | head -1 || true)"
+# AVANT : CONSIGNE_H="$(sed -n 's/^consigne_humaine=//p' "$FICHE_TACHE" 2>/dev/null | head -1 || true)"
+#   (2026-10-04, defaut 112, O57) Une consigne sur plusieurs lignes etait coupee a sa
+#   1re ligne (T-007 d'iziGSM). repondre.sh ecrit desormais la consigne ENTIERE dans
+#   un fichier a part ; la fiche n'en garde qu'une version sur une ligne, lue
+#   seulement en l'absence du fichier (fiche ecrite par un socle plus ancien). Test CH1.
+CONSIGNE_COMPLETE_F="$STATE_DIR/$TASK_ID.consigne-humaine.md"
+if [[ -s "$CONSIGNE_COMPLETE_F" ]]; then
+  CONSIGNE_H="$(cat "$CONSIGNE_COMPLETE_F")"
+else
+  CONSIGNE_H="$(sed -n 's/^consigne_humaine=//p' "$FICHE_TACHE" 2>/dev/null | head -1 || true)"
+fi
 # (2026-09-27, O48) Corrections demandees par le relecteur (boucle de
 # correction, pipeline.sh) : ecrites dans l'etat, remises a l'agent comme la
 # consigne humaine, consommees apres la session. Test BC1.
@@ -207,8 +217,21 @@ for GATE_N in "${GATES_TACHE[@]}"; do
   GATE_C=""
   [[ -f "$ROOT/orchestrator/gates.json" ]] \
     && GATE_C="$(jq -r --arg g "$GATE_N" '.gates[$g] // empty' "$ROOT/orchestrator/gates.json" 2>/dev/null || true)"
-  COMMANDES_GATES+="  - $GATE_N : ${GATE_C:-commande non déclarée dans gates.json}"$'\n'
+  # AVANT :   COMMANDES_GATES+="  - $GATE_N : ${GATE_C:-commande non déclarée dans gates.json}"$'\n'
+  # (2026-10-04, defaut 113, O58) La commande est recopiee de gates.json telle quelle :
+  # « bash "$ROOT/orchestrator/e2e-gate.sh" » ne marchait pas chez l'agent, dont le
+  # shell n'a pas de variable ROOT (T-007 a monte un serveur a la main, ~40 tours).
+  # $ROOT et ${ROOT} sont remplaces par le chemin reel du projet. Test DC4.
+  # shellcheck disable=SC2016  # motifs litteraux « ${ROOT} » et « $ROOT » : voulu
+  commande_pour_l_agent="${GATE_C//'${ROOT}'/$ROOT}"
+  # shellcheck disable=SC2016
+  commande_pour_l_agent="${commande_pour_l_agent//'$ROOT'/$ROOT}"
+  COMMANDES_GATES+="  - $GATE_N : ${commande_pour_l_agent:-commande non déclarée dans gates.json}"$'\n'
 done
+# (2026-10-03, ADR 0004 D2.3) Derniere puce : la regle de lisibilite de l'utilisateur.
+# Elle vit dans son CLAUDE.md global sous Windows, que les agents ne lisent pas : ils
+# tournent sous WSL (/home/said) ou sur une autre machine. La consigne la porte donc
+# elle-meme, quelle que soit la machine. Test DC1.
 cat >>"$WT/.claude-task.md" <<EOF
 
 ## Méthode (ADR 0004)
@@ -221,6 +244,11 @@ ${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conc
   CLAUDE.md du projet, et les motifs du code voisin (structure, nommage, gestion
   d'erreur, commentaires). Toute nouvelle abstraction se justifie dans « ecarts » de ton compte
   rendu. Le relecteur rejette un écart à l'architecture déclarée (R11).
+- Lisibilité (règle de l'utilisateur, 2026-10-03) : écris un code qu'un humain comprend
+  à la première lecture, même s'il est plus long. Jamais d'écriture optimisée ou compacte :
+  des noms qui disent ce qu'ils portent, une condition nommée plutôt qu'une double négation,
+  une boucle simple plutôt qu'une regex à lookahead, une fonction courte par idée, des alias
+  SQL parlants avec un commentaire par condition.
 EOF
 if [[ -n "$CONSIGNE_H" ]]; then
   printf '\n## CONSIGNE DE L'"'"'HUMAIN (prioritaire)\n%s\n' "$CONSIGNE_H" >>"$WT/.claude-task.md"
@@ -319,6 +347,12 @@ REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" --arg
 # que soit la forme qui a echappe au hook. Test GG3.
 TETE_AVANT="$(git -C "$WT" rev-parse HEAD)"
 
+# (2026-10-05, defaut 114, O65 partie 1) Budget de cette session de l'agent : ce
+# qui reste du plafond de depense du jour (60 $ par jour, tous projets, jour de
+# Paris ; lib.sh). Passe a claude par --max-budget-usd : l'agent s'arrete au tour
+# suivant quand il est atteint (depassement possible d'un tour). Test PJ2.
+RESTE_DU_JOUR_USD="$(reste_du_jour_usd)"
+
 set +e
 # (2026-09-24, O7) Filet si l'agent commite malgre tout (autre forme de commande
 # que « git commit », skill qui commite) : l'identite git de son environnement est
@@ -330,6 +364,7 @@ GIT_COMMITTER_NAME="agent-$TASK_ID" GIT_COMMITTER_EMAIL="agent@local" \
 ORCH_AGENT_TACHE="$TASK_ID" ORCH_PERIMETRE="${TACHE[perimetre]:-}" ORCH_SOCLE="$ROOT" ORCH_WT="$WT" \
 ORCH_CRITIQUES="$ROOT/orchestrator/fichiers-critiques.json" \
 claude -p "$PROMPT" "${REPRISE[@]}" \
+  --max-budget-usd "$RESTE_DU_JOUR_USD" \
   --model "$MODEL" \
   --output-format stream-json --verbose \
   --max-turns "$MAX_TURNS" \
@@ -341,6 +376,8 @@ CLAUDE_RC=$?
 set -e
 # Consigne consommee : elle ne sera pas redonnee a la relance suivante (EC13).
 [[ -z "$CONSIGNE_H" ]] || sed -i 's/^consigne_humaine=.*/consigne_humaine=/' "$FICHE_TACHE"
+# (2026-10-04, defaut 112, O57) Le fichier de la consigne entiere est consomme aussi.
+rm -f "$CONSIGNE_COMPLETE_F"
 # (2026-09-27, O48) Corrections consommees de meme. Une consigne humaine ouvre un
 # nouveau cycle : le compteur de la boucle de correction repart de zero. Test BC2.
 rm -f "$CORRECTIONS_F"
@@ -361,6 +398,9 @@ if [[ -f "$WT/$COMPTE_RENDU_AGENT" ]]; then
     #   autres restent lisibles dans le compte rendu remis au relecteur. Test EC12.
     jq '[(.demandes_ecriture // [])[] | select((.fichier // "") != "" and ((.diff // "") | test("@@")))
          | . + {origine: "agent"}]' "$CR_ETAT" >"$STATE_DIR/$TASK_ID.demandes.json"
+    # (2026-10-03, defaut 109, O70) Chaque demande retenue est verifiee contre le
+    # worktree : en-tete de hunk recompte, ou demande marquee inapplicable. Tests DA1, DA2.
+    verifier_demandes_ecriture "$WT" "$STATE_DIR/$TASK_ID.demandes.json"
     DEM_ECARTEES="$(jq '[(.demandes_ecriture // [])[]] | length' "$CR_ETAT")"
     DEM_ECARTEES=$(( DEM_ECARTEES - $(jq length "$STATE_DIR/$TASK_ID.demandes.json") ))
     (( DEM_ECARTEES == 0 )) || log "Demande(s) d'ecriture ecartee(s) faute de diff : $DEM_ECARTEES"
@@ -383,8 +423,24 @@ if [[ -f "$WT/$COMPTE_RENDU_AGENT" ]]; then
   fi
   rm -f "$WT/$COMPTE_RENDU_AGENT"
 else
-  rm -f "$CR_ETAT"
-  log "Aucun compte rendu de l'agent"
+  # AVANT :   rm -f "$CR_ETAT"
+  # AVANT :   log "Aucun compte rendu de l'agent"
+  #   (2026-10-03, defaut 107, O74, T-009 et T-012 iziGSM) Un passage de l'agent sans
+  #   compte rendu effacait celui du passage precedent : le relecteur rejetait alors
+  #   « aucun compte rendu ». Un compte rendu lisible est garde et marque repris ; un
+  #   compte rendu illisible est efface comme avant. Tests RP1, RP2.
+  compte_rendu_precedent_lisible=false
+  if [[ -f "$CR_ETAT" ]] && jq -e 'type == "object" and (.invalide != true)' "$CR_ETAT" >/dev/null 2>&1; then
+    compte_rendu_precedent_lisible=true
+  fi
+  if [[ "$compte_rendu_precedent_lisible" == true ]]; then
+    jq '. + {repris_d_un_passage_precedent: true}' "$CR_ETAT" >"$CR_ETAT.tmp"
+    mv "$CR_ETAT.tmp" "$CR_ETAT"
+    log "Aucun compte rendu de l'agent : celui du passage precedent est garde (marque repris)"
+  else
+    rm -f "$CR_ETAT"
+    log "Aucun compte rendu de l'agent"
+  fi
 fi
 # (2026-09-22, defaut 7) Cout, tokens, tours et duree de l'auteur au journal des
 # couts, AVANT la porte : une tache rouge ou en panne a quand meme depense.
@@ -441,6 +497,15 @@ if [[ "$(jq -r 'select(.type == "result") | .subtype // empty' "$LOG" 2>/dev/nul
   log "Agent coupe a ${TOURS:-?} tours (plafond $MAX_TURNS) : travail partiel sur $BRANCH, controles non lances"
   cd "$ROOT"
   exit 33
+fi
+# (2026-10-05, defaut 114, O65 partie 1) Agent arrete par son budget (reste du
+# plafond du jour) : meme traitement que le plafond de tours — travail partiel
+# garde sur la branche (commit ci-dessus), controles NON lances, code 35 :
+# pipeline.sh en fait P19:plafond-jour-en-cours. Test PJ3.
+if [[ "$(jq -r 'select(.type == "result") | .subtype // empty' "$LOG" 2>/dev/null | tail -1 || true)" == error_max_budget_usd ]]; then
+  log "Agent arrete par son budget (reste du jour : $RESTE_DU_JOUR_USD \$) : travail partiel sur $BRANCH, controles non lances"
+  cd "$ROOT"
+  exit 35
 fi
 
 # --- 8. Porte -------------------------------------------------------------

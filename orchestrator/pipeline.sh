@@ -86,6 +86,21 @@ if [[ "$BRANCHE_RACINE" == "$INTEGRATION_BRANCH" ]]; then
   exit 32
 fi
 
+# 0-bis. Plafond de depense du jour (2026-10-05, defaut 114, O65 partie 1) —
+# decision de l'operateur : 60 $ par jour, tous projets declares, jour de Paris
+# (lib.sh). Atteint, aucun appel payant ne part, reprise sans agent comprise
+# (le relecteur paie aussi) : escalade P19 (L3). Tests PJ1, PJ5.
+if plafond_jour_atteint; then
+  transition PARKED
+  ESC_PLAFOND="$STATE_DIR/$TASK_ID.escalade-plafond.json"
+  jq -nc --arg d "$(depense_du_jour_usd)" --arg p "$(plafond_jour_usd)" \
+    '{raisons: ["P19:plafond-jour"],
+      detail: ("Plafond de depense du jour atteint : " + $d + " $ depenses pour " + $p + " $ autorises (tous projets, jour de Paris). Aucun agent ne part. Gestes : attendre demain puis repondre approuver (relance), ou relever ORCH_PLAFOND_JOUR_USD dans ~/.orchestrateur.env puis approuver.")}' >"$ESC_PLAFOND"
+  "$D/escalade.sh" "$TASK_ID" "$ESC_PLAFOND" || true
+  log "$TASK_ID : plafond de depense du jour atteint — aucun appel payant (P19)"
+  exit 20
+fi
+
 # 0-. Installation (2026-09-29, ADR 0004 D4) — si le projet l'a activee
 # ("installation": true dans gates.json). Sans docs/agents/issue-tracker.md,
 # l'agent ne part pas : escalade P18 (L3), aucun appel payant, avant le controle
@@ -239,6 +254,16 @@ if (( rcg != 0 )); then
         '{raisons: ["P14:max-turns"],
           detail: ("Agent coupe a " + $n + " tours, avant la fin : travail partiel garde sur sa branche, controles non lances. approuver = reprendre sa session (meme plafond) ; plafond plus haut = max_tours=N dans la fiche de la tache, puis approuver ; ticket trop gros = le decouper.")}' >"$ESC_TOURS"
       "$D/escalade.sh" "$TASK_ID" "$ESC_TOURS" || true ;;
+    35)
+      # (2026-10-05, defaut 114, O65 partie 1) Agent arrete par son budget
+      # (--max-budget-usd = reste du jour) : travail partiel garde sur sa branche,
+      # controles non lances. Raison propre, comme P14:max-turns. Test PJ3.
+      transition PARKED
+      ESC_BUDGET="$STATE_DIR/$TASK_ID.escalade-budget.json"
+      jq -nc --arg p "$(plafond_jour_usd)" \
+        '{raisons: ["P19:plafond-jour-en-cours"],
+          detail: ("Agent arrete en cours de route : le plafond de depense du jour (" + $p + " $, tous projets, jour de Paris) est atteint. Travail partiel garde sur sa branche, controles non lances. Gestes : demain, repondre approuver (reprise de sa session) ; ou relever ORCH_PLAFOND_JOUR_USD dans ~/.orchestrateur.env puis approuver.")}' >"$ESC_BUDGET"
+      "$D/escalade.sh" "$TASK_ID" "$ESC_BUDGET" || true ;;
     34)
       # (2026-09-29, ADR 0004 D1.3) L'agent a commite lui-meme malgre la consigne
       # et le hook guard-git : P13:commit-agent (L4 par escalade.json), branche en

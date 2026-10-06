@@ -291,9 +291,57 @@ empreinte_tache() {
 # (ADR 0002 : ce que l'humain a lu est ce qui est ecrit). Avant, le detail
 # s'arretait a la justification. Tests EP1 a EP3.
 escalade_demandes_ecriture() {
-  jq -c '{raisons: ["P12:demande-ecriture(\(length))"],
-          detail: (map("- \(.fichier) : \(.besoin // "") — justification : \(.justification // "aucune")\n  Diff exact (ecrit tel quel si approuve) :\n\(.diff // "(aucun)")") | join("\n"))}' \
+  # (2026-10-03, defaut 109, O70) Filtre precedent, sans l'etat de verification de
+  # chaque demande (verifier_demandes_ecriture) :
+  # AVANT :   jq -c '{raisons: ["P12:demande-ecriture(\(length))"],
+  # AVANT :           detail: (map("- \(.fichier) : \(.besoin // "") — justification : \(.justification // "aucune")\n  Diff exact (ecrit tel quel si approuve) :\n\(.diff // "(aucun)")") | join("\n"))}' \
+  # AVANT :     "$1"
+  # Sous chaque demande, une ligne dit si son en-tete a ete recompte ou si elle ne
+  # s'applique pas. Les textes passent par --arg : ils contiennent une apostrophe.
+  jq -c \
+    --arg texte_recompte "  En-tête de hunk faux, recompté par le harnais : contenu inchangé." \
+    --arg texte_inapplicable "  NE S'APPLIQUE PAS : refuser, ou relancer en demandant un diff corrigé. Raison (git) : " \
+    'def etat_de_verification:
+       if .applicable == false then $texte_inapplicable + (.raison_git // "inconnue") + "\n"
+       elif .en_tete_recompte == true then $texte_recompte + "\n"
+       else "" end;
+     {raisons: ["P12:demande-ecriture(\(length))"],
+      detail: (map("- \(.fichier) : \(.besoin // "") — justification : \(.justification // "aucune")\n"
+                   + etat_de_verification
+                   + "  Diff exact (ecrit tel quel si approuve) :\n\(.diff // "(aucun)")") | join("\n"))}' \
     "$1"
+}
+
+# verifier_demandes_ecriture <worktree> <demandes.json>
+# (2026-10-03, defaut 109, O70) Une demande d'ecriture se verifie a la reception :
+# sur T-009 (iziGSM), un en-tete « +1,17 » pour 14 lignes n'a ete vu qu'a
+# l'approbation (« ne s'applique pas telle quelle »). Une demande qui ne passe que
+# par --recount (compteurs de l'en-tete faux, contenu juste) est marquee
+# en_tete_recompte ; une demande qui ne passe pas du tout est marquee
+# applicable: false, avec la raison donnee par git. Tests DA1, DA2.
+verifier_demandes_ecriture() {
+  local worktree="$1" demandes="$2"
+  local nombre_de_demandes index fichier_du_diff raison_donnee_par_git
+  nombre_de_demandes="$(jq length "$demandes")"
+  fichier_du_diff="$(mktemp)"
+  for (( index = 0; index < nombre_de_demandes; index++ )); do
+    # Exactement un saut de ligne final : « jq -r » en ajoute un apres le diff, et
+    # la ligne vide obtenue serait lue par --recount comme une ligne de contexte.
+    jq -j --argjson i "$index" \
+      '.[$i].diff | if endswith("\n") then . else . + "\n" end' "$demandes" >"$fichier_du_diff"
+    if git -C "$worktree" apply --check "$fichier_du_diff" >/dev/null 2>&1; then
+      continue    # la demande s'applique telle quelle
+    fi
+    if git -C "$worktree" apply --check --recount "$fichier_du_diff" >/dev/null 2>&1; then
+      jq --argjson i "$index" '.[$i].en_tete_recompte = true' "$demandes" >"$demandes.tmp"
+    else
+      raison_donnee_par_git="$(git -C "$worktree" apply --check --recount "$fichier_du_diff" 2>&1 | head -3 || true)"
+      jq --argjson i "$index" --arg raison "$raison_donnee_par_git" \
+        '.[$i].applicable = false | .[$i].raison_git = $raison' "$demandes" >"$demandes.tmp"
+    fi
+    mv "$demandes.tmp" "$demandes"
+  done
+  rm -f "$fichier_du_diff"
 }
 
 # curl_prive <url> [en-tete secret ...] -- [option curl ...]
@@ -412,7 +460,17 @@ correction_eligible() {
   local dec="$1" rev="$2"
   [[ "$(jq -r '.verdict // ""' "$rev" 2>/dev/null)" == desaccord ]] || return 1
   [[ "$(jq -r '.verdict // ""' "$dec" 2>/dev/null)" != PARK ]] || return 1
-  jq -e '(.raisons // []) | map(select(startswith("P") or startswith("M3:risque-high"))) | length == 0' \
+  # AVANT :   jq -e '(.raisons // []) | map(select(startswith("P") or startswith("M3:risque-high"))) | length == 0' \
+  # AVANT :     "$dec" >/dev/null 2>&1
+  #   (2026-10-04, defaut 111, O61, decision de l'operateur, qui revient sur celle du
+  #   27/09 pour P16) Une preuve a fournir (P16) n'est pas un arret : decide.sh ramene
+  #   seulement AUTO_MERGE a PR_READY. Sur T-007 (iziGSM), desaccord + P16 a publie la
+  #   PR avec 3 rejets majeurs, sans correction. Bloquent la boucle : toute autre raison
+  #   P, et le risque eleve. La preuve reste a fournir apres la correction. Tests BC3, BC5.
+  jq -e '(.raisons // [])
+         | map(select(startswith("P16:") | not))
+         | map(select(startswith("P") or startswith("M3:risque-high")))
+         | length == 0' \
     "$dec" >/dev/null 2>&1
 }
 
@@ -425,4 +483,115 @@ consigne_correction() {
     + "\nResume du relecteur : \(.resume // "aucun")\n"
     + "Corrige ces points dans ton perimetre. Un rejet que tu juges infonde : ne le contourne pas, explique-le dans ecarts de ton compte rendu."' \
     "$1"
+}
+
+# ════ Plafond de depense par jour (2026-10-05, defaut 114, O65 partie 1) ════
+# Decision de l'operateur : plafond GLOBAL (tous les projets declares), 60 $ par
+# jour, jour de Paris. Reglage ORCH_PLAFOND_JOUR_USD dans ~/.orchestrateur.env
+# (60 par defaut). La depense se lit dans journal/couts.jsonl de chaque projet,
+# une ligne par appel payant (journaliser_cout). Avant, rien ne s'arretait sur
+# le cout (O16). Tests PJ1 a PJ5.
+
+# lire_reglage_orchestrateur <NOM> — valeur de la variable d'environnement si elle
+# est posee, sinon celle de ~/.orchestrateur.env (meme lecture qu'escalade.sh).
+# Rend 1 si la variable n'existe nulle part.
+lire_reglage_orchestrateur() {
+  local nom="$1" valeur ligne fichier_reglages
+  valeur="${!nom:-}"
+  if [[ -n "$valeur" ]]; then
+    printf '%s' "$valeur"
+    return 0
+  fi
+  fichier_reglages="${ORCHESTRATEUR_ENV:-$HOME/.orchestrateur.env}"
+  [[ -r "$fichier_reglages" ]] || return 1
+  ligne="$(grep -m1 -E "^[[:space:]]*(export[[:space:]]+)?${nom}[[:space:]]*=" "$fichier_reglages" 2>/dev/null)" || return 1
+  valeur="${ligne#*=}"
+  valeur="${valeur#\"}"; valeur="${valeur%\"}"
+  valeur="${valeur#\'}"; valeur="${valeur%\'}"
+  valeur="$(printf '%s' "$valeur" | tr -d '[:space:]')"
+  [[ -n "$valeur" ]] || return 1
+  printf '%s' "$valeur"
+}
+
+# bornes_du_jour_de_paris — imprime « debut fin » du jour de Paris, en UTC au
+# format des lignes de couts.jsonl (ex. « 2026-09-17T22:00:00Z 2026-09-18T22:00:00Z »).
+# ORCH_AUJOURDHUI (AAAA-MM-JJ), pose par les tests, remplace la date du jour.
+bornes_du_jour_de_paris() {
+  python3 - "${ORCH_AUJOURDHUI:-}" <<'PY'
+import sys
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+paris = ZoneInfo("Europe/Paris")
+jour_demande = sys.argv[1]
+if jour_demande:
+    jour = date.fromisoformat(jour_demande)
+else:
+    jour = datetime.now(paris).date()
+debut_a_paris = datetime.combine(jour, time(0, 0), paris)
+fin_a_paris = datetime.combine(jour + timedelta(days=1), time(0, 0), paris)
+format_des_journaux = "%Y-%m-%dT%H:%M:%SZ"
+print(debut_a_paris.astimezone(timezone.utc).strftime(format_des_journaux),
+      fin_a_paris.astimezone(timezone.utc).strftime(format_des_journaux))
+PY
+}
+
+# journaux_de_couts_des_projets — un chemin par ligne : le journal des couts du
+# projet courant, puis celui de chaque projet declare dans ORCH_PROJETS.
+journaux_de_couts_des_projets() {
+  local projets_declares projet
+  local -a liste_des_projets=()
+  printf '%s\n' "$ORCH_DIR/journal/couts.jsonl"
+  projets_declares="$(lire_reglage_orchestrateur ORCH_PROJETS || true)"
+  IFS=':' read -r -a liste_des_projets <<<"$projets_declares"
+  for projet in "${liste_des_projets[@]}"; do
+    if [[ -n "$projet" ]]; then
+      printf '%s\n' "$projet/.orchestrator/journal/couts.jsonl"
+    fi
+  done
+}
+
+# depense_du_jour_usd — somme des couts du jour de Paris, sur tous les projets.
+# Un projet declare deux fois (courant et dans ORCH_PROJETS) compte une fois :
+# les journaux sont dedoublonnes par leur chemin reel.
+depense_du_jour_usd() {
+  local debut_du_jour fin_du_jour journal
+  local -a journaux_existants=()
+  read -r debut_du_jour fin_du_jour < <(bornes_du_jour_de_paris)
+  while read -r journal; do
+    journaux_existants+=("$journal")
+  done < <(journaux_de_couts_des_projets | while read -r chemin; do
+             if [[ -f "$chemin" ]]; then
+               realpath "$chemin"
+             fi
+           done | sort -u)
+  if (( ${#journaux_existants[@]} == 0 )); then
+    printf '0\n'
+    return 0
+  fi
+  jq -Rn --arg debut "$debut_du_jour" --arg fin "$fin_du_jour" '
+    [ inputs | fromjson? | objects
+      | select((.ts // "") >= $debut and (.ts // "") < $fin)
+      | (.cout_usd // 0) ]
+    | add // 0' "${journaux_existants[@]}"
+}
+
+# plafond_jour_usd — plafond du jour en dollars (60 par defaut).
+plafond_jour_usd() {
+  local plafond
+  plafond="$(lire_reglage_orchestrateur ORCH_PLAFOND_JOUR_USD || true)"
+  printf '%s\n' "${plafond:-60}"
+}
+
+# plafond_jour_atteint — vrai (code 0) si la depense du jour atteint le plafond.
+plafond_jour_atteint() {
+  awk -v depense="$(depense_du_jour_usd)" -v plafond="$(plafond_jour_usd)" \
+    'BEGIN { if (depense >= plafond) exit 0; else exit 1 }'
+}
+
+# reste_du_jour_usd — ce qui reste a depenser aujourd'hui, deux decimales, jamais
+# negatif : passe a claude par --max-budget-usd.
+reste_du_jour_usd() {
+  awk -v depense="$(depense_du_jour_usd)" -v plafond="$(plafond_jour_usd)" \
+    'BEGIN { reste = plafond - depense; if (reste < 0) reste = 0; printf "%.2f\n", reste }'
 }

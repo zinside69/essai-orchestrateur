@@ -43,6 +43,7 @@ run_gate() {
   local nom="$1"; shift
   local logf="$LOG_DIR/gate-$TASK_ID-$nom.log"
   local t0 t1 dur rc sha
+  local copie_du_rouge
   # AVANT :   t0="$(date +%s%3N 2>/dev/null || date +%s)"
   t0="$(maintenant_ms)"
   if "$@" >"$logf" 2>&1; then
@@ -53,6 +54,12 @@ run_gate() {
     log "gate FAIL: $nom"
     VERDICT="red"
     RAISONS+=("gate:$nom")
+    # (2026-10-03, defaut 108, O69) La sortie d'un controle rouge est copiee sous un nom
+    # date : le passage suivant (rejouer) reecrit gate-T-NNN-<nom>.log et effacait le rouge.
+    # Le numero de processus departage deux rouges dans la meme seconde. Test RG1.
+    copie_du_rouge="$LOG_DIR/gate-$TASK_ID-$nom.rouge-$(date +%Y%m%d-%H%M%S)-$$.log"
+    cp "$logf" "$copie_du_rouge"
+    log "sortie du controle rouge gardee : $copie_du_rouge"
   fi
   # AVANT :   t1="$(date +%s%3N 2>/dev/null || date +%s)"
   t1="$(maintenant_ms)"
@@ -80,6 +87,12 @@ run_gate() {
 # AVANT :   run_gate test      npm run test      --silent
 # AVANT :   run_gate build     npm run build     --silent
 # AVANT : }
+# (2026-10-03, defaut 108, O69) Dossier ou une commande de controle range ses rapports
+# (rapport JSON de Vitest, par exemple). Le projet les ecrivait dans un mktemp, perdu des
+# la fin du controle : un rouge instable ne s'identifiait pas. Tests RG1, RG2.
+ORCH_RAPPORTS="$LOG_DIR/rapports/$TASK_ID"
+mkdir -p "$ORCH_RAPPORTS"
+export ORCH_RAPPORTS
 GATES_CFG="$ROOT/orchestrator/gates.json"
 if [[ -f "$GATES_CFG" ]]; then
   GATES_TACHE="$(parse_task "$TASK_ID" | sed -n 's/^gates=//p')"

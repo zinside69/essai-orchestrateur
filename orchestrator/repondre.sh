@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # repondre.sh — applique une reponse humaine a une escalade, avant ou apres expiration.
 # AVANT : # Usage : repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter> [message]
-# Usage : repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier> [message]
+# AVANT : # Usage : repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier> [message]
+# Usage : repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier|rejouer> [message]
 #         repondre.sh --help
 #
 # (2026-09-22, O11) « republier » : apres une publication ratee (P9), relance
@@ -35,6 +36,8 @@ Usage:
 Applique une decision a une tache PARKED ou BLOCKED et ferme l'escalade ouverte.
 « republier » : apres une publication ratee (P9) seulement ; relance la
 publication seule, puis PUBLISHED.
+« rejouer » : rejoue les controles, la revue et la decision SANS relancer
+l'agent, sur le travail deja commite de sa branche (O72).
 EOF
 }
 
@@ -59,7 +62,9 @@ done
 # AVANT : [[ -n "$TASK_ID" && -n "$DECISION_H" ]] || die "usage: repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter> [message]"
 # AVANT : [[ -n "$TASK_ID" && -n "$DECISION_H" ]] || die "usage: repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier> [message]"
 #   (2026-09-24, ADR 0002) nettoyer et relancer : reponses a une violation (P13).
-[[ -n "$TASK_ID" && -n "$DECISION_H" ]] || die "usage: repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier|nettoyer|relancer> [message]"
+# AVANT : [[ -n "$TASK_ID" && -n "$DECISION_H" ]] || die "usage: repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier|nettoyer|relancer> [message]"
+#   (2026-10-03, O72) rejouer : controles, revue et decision sans agent.
+[[ -n "$TASK_ID" && -n "$DECISION_H" ]] || die "usage: repondre.sh [--dry-run] T-NNN <approuver|refuser|modifier|reporter|republier|nettoyer|relancer|rejouer> [message]"
 ENVF="$ETAT_DIR/taches/$TASK_ID.env"
 [[ -f "$ENVF" ]] || die "tache inconnue : $TASK_ID"
 
@@ -80,6 +85,7 @@ case "$DECISION_H" in
   republier) CIBLE="PUBLISHED" ;;
   nettoyer)  CIBLE="READY" ;;
   relancer)  CIBLE="READY" ;;
+  rejouer)   CIBLE="READY" ;;
   *) die "decision inconnue : $DECISION_H" ;;
 esac
 
@@ -197,6 +203,26 @@ if (( PREUVE_OUV == 1 )) && [[ "$DECISION_H" == approuver || "$DECISION_H" == re
   if [[ "$DECISION_H" == approuver ]]; then MODE_APPROUVER="preuve"; CIBLE="PUBLISHED"; else CIBLE="READY"; fi
 fi
 
+# (2026-10-03, O72) « rejouer » : controles, revue et decision rejoues SANS agent, sur le
+# travail deja commite. Aucune reponse ne le permettait : sans escalade ouverte (fermee par
+# « reporter »), « approuver » publiait sans revue ; sur une P11 instable, approuver et
+# modifier relancaient l'agent, et un passage sans compte rendu effacait le precedent (O74).
+# Vu sur T-009 et T-012 d'iziGSM. Refuse sur une violation (P13) ou une demande d'ecriture
+# (P12) ouvertes, et sans travail commite. Place avant --dry-run : la simulation refuse aussi.
+# Tests RJ1, RJ2.
+if [[ "$DECISION_H" == rejouer ]]; then
+  if (( VIOLATION == 1 )); then
+    die "rejouer refuse sur une violation (P13) : repondre nettoyer, relancer ou refuser"
+  fi
+  if (( DEMANDE_OUV == 1 )); then
+    die "rejouer refuse : une demande d'ecriture (P12) attend sa decision (approuver ou refuser)"
+  fi
+  COMMITS_A_REJOUER="$(git -C "$ROOT" rev-list "$INTEGRATION_BRANCH..$AGENT_BRANCH_PREFIX/$TASK_ID" 2>/dev/null || true)"
+  if [[ -z "$COMMITS_A_REJOUER" ]]; then
+    die "rejouer : aucun travail commite sur $AGENT_BRANCH_PREFIX/$TASK_ID"
+  fi
+fi
+
 if (( DRY_RUN == 1 )); then
   printf '[DRY-RUN repondre] task=%s decision=%s message=%s etat_avant=%s origine=%s regle=%s\n' \
     "$TASK_ID" "$DECISION_H" "$MESSAGE" "$ETAT_ACTUEL" "$ORIGINE" "$REGLE"
@@ -275,11 +301,32 @@ appliquer_demandes() {
   local dem="$STATE_DIR/$TASK_ID.demandes.json" p base f
   local -a fichiers
   [[ -d "$WT_T" ]] || die "approuver : worktree $WT_T absent — escalade maintenue"
+  # (2026-10-03, defaut 109, O70) Une demande marquee inapplicable a la reception
+  # (verifier_demandes_ecriture, lib.sh) est refusee ici, avant tout changement :
+  # l'alerte l'a dit, approuver ne peut rien ecrire. Test DA2.
+  local demandes_inapplicables
+  local -a options_de_git_apply=()
+  demandes_inapplicables="$(jq -r '[.[] | select(.applicable == false) | .fichier] | join(", ")' "$dem")"
+  if [[ -n "$demandes_inapplicables" ]]; then
+    die "approuver : demande(s) qui ne s'appliquent pas ($demandes_inapplicables) — refuser, ou relancer en demandant un diff corrige ; escalade maintenue"
+  fi
+  # Un en-tete de hunk recompte a la reception s'applique avec --recount : seuls les
+  # compteurs de l'en-tete changent, jamais les lignes ecrites. Test DA1.
+  if jq -e 'any(.[]; .en_tete_recompte == true)' "$dem" >/dev/null; then
+    options_de_git_apply=(--recount)
+  fi
   p="$(mktemp)"
-  jq -r '.[].diff' "$dem" >"$p"
-  git -C "$WT_T" apply --check "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
+  # AVANT :   jq -r '.[].diff' "$dem" >"$p"
+  #   (2026-10-03, defaut 109) « jq -r » ajoute un saut de ligne apres chaque diff, qui
+  #   en a deja un : la ligne vide obtenue est lue par --recount comme une ligne de
+  #   contexte (« depends on old contents »). Chaque diff finit par exactement un saut
+  #   de ligne ; sans --recount, le resultat est le meme qu'avant. Test DA1.
+  jq -j '.[].diff | if endswith("\n") then . else . + "\n" end' "$dem" >"$p"
+  # AVANT :   git -C "$WT_T" apply --check "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
+  git -C "$WT_T" apply --check "${options_de_git_apply[@]}" "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
     || die "approuver : une demande ne s'applique pas telle quelle — escalade maintenue ($dem)"
-  git -C "$WT_T" apply --index "$p"
+  # AVANT :   git -C "$WT_T" apply --index "$p"
+  git -C "$WT_T" apply --index "${options_de_git_apply[@]}" "$p"
   rm -f "$p"
   mapfile -t fichiers < <(jq -r '.[].fichier' "$dem")
   git -C "$WT_T" -c user.name=harnais-orchestrateur -c user.email=harnais@local \
@@ -327,6 +374,11 @@ if [[ "$MODE_APPROUVER" == controles ]]; then
   log "$TASK_ID : depassement accepte par l'humain ($(tr '\n' ' ' <"$STATE_DIR/$TASK_ID.depassements-acceptes")) — reprise sans agent vers la revue"
   REPRISE_SANS_AGENT=1
 fi
+# (2026-10-03, O72) Reprise sans agent pour « rejouer » (gardes plus haut, avant --dry-run).
+if [[ "$DECISION_H" == rejouer ]]; then
+  log "$TASK_ID : controles, revue et decision rejoues sans agent"
+  REPRISE_SANS_AGENT=1
+fi
 
 # Publication relancee seule, depuis le worktree de la tache. Nouvel echec :
 # la tache reste PARKED et l'escalade ouverte — rien n'est journalise comme resolu.
@@ -336,9 +388,23 @@ if [[ "$DECISION_H" == "republier" ]]; then
   log "Publication relancee : $TASK_ID ($VERDICT_PRIS)"
 fi
 
+# (2026-10-04, defaut 112, O57) La fiche T-NNN.env est un fichier « une cle par
+# ligne » : une consigne sur plusieurs lignes y laissait des lignes parasites, et
+# run-task.sh n'en lisait que la 1re (T-007 d'iziGSM). La consigne ENTIERE va dans
+# un fichier a part, lu par run-task.sh puis consomme ; la fiche n'en garde qu'une
+# version sur une ligne (pour l'affichage). Tests CH1, CH2.
+CONSIGNE_COMPLETE_F="$STATE_DIR/$TASK_ID.consigne-humaine.md"
+ecrire_consigne_complete() {  # ecrire_consigne_complete <texte de la consigne>
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$1" >"$CONSIGNE_COMPLETE_F"
+}
+
 python3 - "$ENVF" "$DECISION_H" "$MESSAGE" <<'PY'
 import sys
 p, decision, message = sys.argv[1:4]
+# (2026-10-04, defaut 112, O57) Une seule ligne dans la fiche : les sauts de ligne
+# deviennent des espaces. La consigne entiere est dans son fichier a part.
+message_sur_une_ligne = ' '.join(message.splitlines())
 rows=[]
 for line in open(p, encoding='utf-8'):
     if '=' not in line:
@@ -353,15 +419,29 @@ for line in open(p, encoding='utf-8'):
         # AVANT :         if decision == 'modifier':
         #   (2026-09-24, ADR 0002) « relancer » transmet aussi sa consigne a l'agent.
         if decision in ('modifier', 'relancer'):
-            rows.append('consigne_humaine=' + message + '\n')
+            # AVANT :             rows.append('consigne_humaine=' + message + '\n')
+            rows.append('consigne_humaine=' + message_sur_une_ligne + '\n')
         elif decision == 'reporter' and message:
-            rows.append('consigne_humaine=' + message + '\n')
+            # AVANT :             rows.append('consigne_humaine=' + message + '\n')
+            rows.append('consigne_humaine=' + message_sur_une_ligne + '\n')
         else:
             rows.append(line)
     else:
         rows.append(line)
 open(p,'w',encoding='utf-8').writelines(rows)
 PY
+# (2026-10-04, defaut 112, O57) Memes cas que ci-dessus : la consigne entiere,
+# sauts de ligne compris, pour l'agent.
+consigne_transmise_a_l_agent=false
+if [[ "$DECISION_H" == modifier || "$DECISION_H" == relancer ]]; then
+  consigne_transmise_a_l_agent=true
+fi
+if [[ "$DECISION_H" == reporter && -n "$MESSAGE" ]]; then
+  consigne_transmise_a_l_agent=true
+fi
+if [[ "$consigne_transmise_a_l_agent" == true ]]; then
+  ecrire_consigne_complete "$MESSAGE"
+fi
 
 # Transition gardee : rc 30 si la machine a etats refuse (Phase 5 / P3-a)
 transition_etat "$ENVF" "$CIBLE" repondre
@@ -391,9 +471,14 @@ if (( PREUVE_OUV == 1 )) && [[ "$DECISION_H" == approuver || "$DECISION_H" == re
     python3 - "$ENVF" "Preuve rouge (compte rendu humain) : $MESSAGE" <<'PY'
 import sys
 p, consigne = sys.argv[1:3]
-rows = [('consigne_humaine=' + consigne + '\n') if l.startswith('consigne_humaine=') else l for l in open(p, encoding='utf-8')]
+# AVANT : rows = [('consigne_humaine=' + consigne + '\n') if l.startswith('consigne_humaine=') else l for l in open(p, encoding='utf-8')]
+#   (2026-10-04, defaut 112, O57) Une seule ligne dans la fiche ; le compte rendu
+#   entier va dans le fichier de consigne (ecrit juste apres). Test CH2.
+consigne_sur_une_ligne = ' '.join(consigne.splitlines())
+rows = [('consigne_humaine=' + consigne_sur_une_ligne + '\n') if l.startswith('consigne_humaine=') else l for l in open(p, encoding='utf-8')]
 open(p, 'w', encoding='utf-8').writelines(rows)
 PY
+    ecrire_consigne_complete "Preuve rouge (compte rendu humain) : $MESSAGE"
   fi
   log "$TASK_ID : preuve(s) $STATUT_PREUVE — $MESSAGE"
 fi
@@ -427,3 +512,10 @@ PY
 fermer_issue_escalade "$TASK_ID" resolue "$ETAT_DIR/escalades"
 
 log "Reponse enregistree : $TASK_ID -> $DECISION_H ($ORIGINE)"
+
+# (2026-10-06, O60) Une passe du planificateur sans --tache prend la premiere
+# tache eligible, pas forcement celle-ci (T-008 partie a la place de T-007, le
+# 30/09). On donne la commande qui lance celle-ci seule. Test TC7.
+if [[ "$CIBLE" == "READY" ]]; then
+  log "Pour lancer $TASK_ID seule : orchestrator/scheduler.sh --tache $TASK_ID"
+fi
