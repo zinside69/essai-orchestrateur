@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scheduler.sh — selectionne et lance les taches eligibles, respecte le graphe et le disjoncteur.
 # Usage : scheduler.sh [--parallele N] [--inventaire] [--boucle] [--dry-run]
+#         scheduler.sh --tache T-NNN [--parallele N] [--dry-run]   (O65 partie 2)
 #         scheduler.sh --help
 set -Eeuo pipefail
 # shellcheck disable=SC1091
@@ -14,11 +15,13 @@ PARALLELE="${PARALLELE:-2}"
 INVENTAIRE=0
 BOUCLE=0
 DRY_RUN=0
+TACHE_DEMANDEE=""
 
 show_help() {
   cat <<'EOF'
 Usage:
   scheduler.sh [--parallele N] [--inventaire] [--boucle] [--dry-run]
+  scheduler.sh --tache T-NNN [--parallele N] [--dry-run]
   scheduler.sh --help
 
 Fonctions:
@@ -27,6 +30,7 @@ Fonctions:
   - limite le parallélisme ;
   - déclenche pipeline.sh pour les tâches retenues ;
   - peut fonctionner en diagnostic pur (--inventaire, --dry-run).
+  - --tache : lance cette tâche seule, ou refuse en disant pourquoi (code 1).
 EOF
 }
 
@@ -40,9 +44,22 @@ while [[ $# -gt 0 ]]; do
       shift
       PARALLELE="${1:?valeur manquante pour --parallele}"
       shift ;;
+    --tache)
+      shift
+      TACHE_DEMANDEE="${1:?valeur manquante pour --tache}"
+      shift ;;
     *) die "argument inattendu : $1" ;;
   esac
 done
+
+# (2026-10-06, O65 partie 2, O60) --tache : lancer UNE tache precise. Sans elle,
+# une passe prend la premiere tache eligible (priorite, numero) : le 30/09, apres
+# « approuver » sur T-007, c'est T-008 qui est partie. Une boucle sur une seule
+# tache n'a pas de sens : refusee. Tests TC1 a TC6.
+if [[ -n "$TACHE_DEMANDEE" ]]; then
+  [[ "$TACHE_DEMANDEE" =~ ^T-[0-9]+$ ]] || die "--tache attend un identifiant T-NNN : $TACHE_DEMANDEE"
+  (( BOUCLE == 0 )) || die "--tache ne se combine pas avec --boucle"
+fi
 
 require jq git sha256sum
 STATE_DIR="${STATE_DIR:-$ORCH_DIR/state}"
@@ -149,12 +166,54 @@ verifier_expirations() {
     || log "expirations : echec (voir $LOG_DIR/expirations.log)"
 }
 
+# (2026-10-06, O65 partie 2) Avec --tache, ne rien lancer est un REFUS : code 1
+# et raison dite, pour que celui qui a demande (humain, plus tard bouton ntfy) le
+# sache. Sans --tache, rien : la passe se termine normalement, comme avant.
+refuser_si_tache_demandee() {
+  local raison="$1"
+  if [[ -n "$TACHE_DEMANDEE" ]]; then
+    die "$TACHE_DEMANDEE non lancee : $raison"
+  fi
+}
+
+# (2026-10-06, O65 partie 2) La tache demandee doit etre eligible dans le graphe
+# qui vient d'etre recompile. Sinon on dit pourquoi : absente du manifeste,
+# dependance pas faite, ou etat qui ne part pas.
+verifier_tache_demandee_eligible() {
+  local graphe="$1" t="$TACHE_DEMANDEE" etat deps_pas_faites
+  # Absente du manifeste
+  if ! jq -e --arg t "$t" '.noeuds | has($t)' "$graphe" >/dev/null; then
+    refuser_si_tache_demandee "absente du manifeste (todo.md)"
+  fi
+  # Eligible : elle part
+  if jq -e --arg t "$t" '.eligibles | index($t)' "$graphe" >/dev/null; then
+    return 0
+  fi
+  # Suspendue : on nomme les dependances pas encore DONE
+  if jq -e --arg t "$t" '.suspendues | index($t)' "$graphe" >/dev/null; then
+    deps_pas_faites="$(jq -r --arg t "$t" '.noeuds as $n | [$n[$t].deps[] | select($n[.].etat != "DONE")] | join(", ")' "$graphe")"
+    refuser_si_tache_demandee "dependance(s) pas encore DONE : $deps_pas_faites"
+  fi
+  # Autre etat (RUNNING, PARKED, PUBLISHED..., ou cochee [x] sans fiche)
+  etat="$(jq -r --arg t "$t" '.noeuds[$t].etat' "$graphe")"
+  refuser_si_tache_demandee "pas eligible (etat $etat ; seules PENDING et READY partent, et une tache cochee [x] sans fiche est ecartee)"
+}
+
 run_once() {
   local G="$ETAT_DIR/graphe.json" MANIFESTE_SHA GRAPHE_SHA EN_COURS PLACES
 
   verifier_expirations
   if [[ -f "$STATE_DIR/planificateur" ]] && grep -q '^PAUSE' "$STATE_DIR/planificateur"; then
     log "DISJONCTEUR ACTIF — planificateur en PAUSE. Aucune nouvelle tache lancee."
+    refuser_si_tache_demandee "planificateur en PAUSE (disjoncteur)"
+    return 0
+  fi
+  # (2026-10-05, defaut 114, O65 partie 1) Plafond de depense du jour atteint
+  # (60 $ par jour, tous projets, jour de Paris ; lib.sh) : aucune nouvelle tache
+  # lancee avant le lendemain. Test PJ4.
+  if plafond_jour_atteint; then
+    log "PLAFOND DU JOUR ATTEINT — $(depense_du_jour_usd) \$ sur $(plafond_jour_usd) \$ (tous projets). Aucune nouvelle tache lancee."
+    refuser_si_tache_demandee "plafond du jour atteint"
     return 0
   fi
 
@@ -181,13 +240,21 @@ run_once() {
   PLACES=$(( PARALLELE - EN_COURS ))
   if (( PLACES <= 0 )); then
     log "Parallelisme sature ($EN_COURS/$PARALLELE) — rien a lancer"
+    refuser_si_tache_demandee "parallelisme sature ($EN_COURS/$PARALLELE)"
     return 0
   fi
 
+  # (2026-10-06, O65 partie 2) --tache : la seule candidate est la tache demandee,
+  # verifiee eligible ; sinon, choix d'origine (priorite, numero), lignes inchangees.
+  if [[ -n "$TACHE_DEMANDEE" ]]; then
+    verifier_tache_demandee_eligible "$G"
+    CANDIDATES=("$TACHE_DEMANDEE")
+  else
   mapfile -t CANDIDATES < <(
     jq -r '.eligibles[] as $t | "\(.noeuds[$t].priorite // "P9")\t\($t)"' "$G" \
     | sort -k1,1 -k2,2 | cut -f2 | head -n "$PLACES"
   )
+  fi
   [[ ${#CANDIDATES[@]} -gt 0 ]] || { log "Aucune tache eligible"; return 0; }
 
   RETENUES=()
@@ -227,6 +294,10 @@ run_once() {
     done
     (( conflit == 0 )) && RETENUES+=("$t")
   done
+  # (2026-10-06, O65 partie 2) La tache demandee est ecartee par un conflit : refus.
+  if (( ${#RETENUES[@]} == 0 )); then
+    refuser_si_tache_demandee "en conflit avec une tache commencee et pas terminee (voir le message plus haut)"
+  fi
 
   for t in "${RETENUES[@]:-}"; do
     [[ -z "$t" ]] && continue
@@ -246,6 +317,8 @@ run_once() {
     # Transition gardee READY -> RUNNING (Phase 5 / P3-a)
     if ! transition_etat "$ETAT_DIR/taches/$t.env" RUNNING scheduler; then
       log "transition refusee pour $t — tache ignoree"
+      # (2026-10-06, O65 partie 3) Avec --tache, rien n'est parti : refus, code 1.
+      refuser_si_tache_demandee "transition vers RUNNING refusee par la machine a etats"
       continue
     fi
     if (( DRY_RUN == 1 )); then

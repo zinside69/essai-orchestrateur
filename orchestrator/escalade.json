@@ -40,10 +40,11 @@
   "_commentaire_canaux_o3_partie2": "2026-09-27 (O3 partie 2) : github_issue de retour sur L3 et L4, generique : le socle cree les etiquettes agent et escalade-Ln, commente l'issue ouverte aux relances, la ferme a la fin de l'escalade, et ignore le canal sans remote. Tests GI1 a GI4. AVANT : L3 et L4 \"canaux\": [\"push_prioritaire\", \"email\", \"journal_email\"].",
   "_commentaire_derivation_p18": "2026-09-29 (ADR 0004 D3) : P18 (ticket sans coutures a tester, avant l agent, decision humaine) en L3. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\", \"P12:*\", \"P14:*\", \"P15:*\", \"P16:*\", \"P17:*\"].",
   "_commentaire_disjoncteur_o16": "2026-09-27 (O16) : cle cout_24h_max_usd retiree ; aucun script ne la lisait (garde-fou annonce mais absent). L'operateur a choisi l'alerte sans arret (22/09) ; a rebrancher, reellement, avant la marche sans surveillance. AVANT : \"cout_24h_max_usd\": 25.0 dans disjoncteur.",
+  "_commentaire_derivation_p19": "2026-10-05 (defaut 114, O65 partie 1) : P19 (plafond de depense du jour atteint, avant ou pendant l agent, decision humaine) en L3. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\", \"P12:*\", \"P14:*\", \"P15:*\", \"P16:*\", \"P17:*\", \"P18:*\"].",
   "derivation": {
     "L1": ["M1:*", "M2:*"],
     "L2": ["M3:desaccord-reviewer"],
-    "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*", "P12:*", "P14:*", "P15:*", "P16:*", "P17:*", "P18:*"],
+    "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*", "P12:*", "P14:*", "P15:*", "P16:*", "P17:*", "P18:*", "P19:*"],
     "L4": ["P2:*", "P3:*", "P5:*", "P13:*"]
   },
   "disjoncteur": {

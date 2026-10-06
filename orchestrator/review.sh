@@ -66,6 +66,9 @@ fi
 # relecteur a suivi la premiere, l'a trouvee illisible et conclu desaccord sans
 # juger le code ; sur T-003 a T-006 il avait pris la seconde. Le verdict
 # dependait du modele. Une seule entree desormais, nommee opposable. Test W4.
+# (2026-10-03, defaut 110, O73) Derniere ligne de la consigne : citer avec « ». Sur
+# T-009 (iziGSM), une citation entre guillemets droits non echappes a rendu le JSON
+# du relecteur illisible, d'ou une P4 trompeuse. Meme regle que conception.sh. Test GQ1.
 PROMPT="$(cat <<EOF
 Relis le diff ci-dessous contre la déclaration de tâche, puis produis ton jugement JSON.
 
@@ -82,6 +85,7 @@ ${ARCHITECTURE_DECLAREE}
 RAPPEL : tu ne connais pas la session qui a produit ce diff et tu ne dois pas chercher
 à la reconstituer. Juge uniquement le contenu du diff contre ce qui précède.
 Réponds par un objet JSON unique, sans aucun texte autour.
+Dans les textes, cite avec « », jamais avec des guillemets droits (ils cassent le JSON).
 EOF
 )"
 
@@ -114,6 +118,12 @@ if [[ -s "$CR_AUTEUR" ]]; then
   CR_TEXTE="$(cat "$CR_AUTEUR")"
 else
   CR_TEXTE='AUCUN COMPTE RENDU FOURNI PAR L AUTEUR — il devait en rendre un ; signale-le.'
+fi
+# (2026-10-03, defaut 107, O74) Compte rendu garde d'un passage precedent : le
+# relecteur est prevenu qu'il peut ne pas decrire les derniers changements. Test RP2.
+if [[ -s "$CR_AUTEUR" ]] && jq -e '.repris_d_un_passage_precedent == true' "$CR_AUTEUR" >/dev/null 2>&1; then
+  CR_TEXTE="ATTENTION : compte rendu d'un passage PRECEDENT de l'auteur (il n'en a pas rendu a ce passage) — il peut ne pas decrire les derniers changements du diff.
+$CR_TEXTE"
 fi
 PROMPT="$PROMPT
 
@@ -159,8 +169,13 @@ fi
 # skill de revue designe. Ligne d'origine citee ici : un commentaire ne peut pas
 # s'inserer entre les lignes continuees (\) de la commande ci-dessous.
 # AVANT :   --allowed-tools "Read,Grep,Glob" \
+# (2026-10-02, défaut 105, O66) Le prompt part par l'entrée standard. En argument,
+# un diff de plus de 128 Ko (limite Linux MAX_ARG_STRLEN par argument) faisait
+# échouer l'exec : « Argument list too long », code 126, escalade L4 P5 trompeuse
+# (T-009 d'iziGSM, diff de 152 Ko). Test W5.
+# AVANT : claude -p "$PROMPT" \
 set +e
-claude -p "$PROMPT" \
+printf '%s' "$PROMPT" | claude -p \
   --agent reviewer-diff \
   --model "$MODELE_REVIEWER" \
   --permission-mode plan \
@@ -168,7 +183,9 @@ claude -p "$PROMPT" \
   --output-format json \
   --allowed-tools "$OUTILS_REVUE" \
   >"$STATE.reviewer.json" 2>"$STATE.reviewer.err"
-RC=$?
+# AVANT : RC=$?
+# (2026-10-02, défaut 105) Code de claude, pas du printf (pipefail).
+RC=${PIPESTATUS[1]}
 set -e
 # (2026-09-22, defaut 7) Cout du relecteur au journal des couts, meme si sa
 # sortie est ensuite refusee (P4) : la depense a eu lieu.
