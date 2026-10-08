@@ -1,4 +1,4 @@
-// saisie.js — lecture des montants saisis par un utilisateur.
+// Voir aussi src/texte.js
 // Le résultat est toujours en centimes entiers, jamais en flottant.
 
 // Signe optionnel, partie entière (avec ou sans espaces entre milliers),
