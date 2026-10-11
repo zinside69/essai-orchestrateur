@@ -595,3 +595,41 @@ reste_du_jour_usd() {
   awk -v depense="$(depense_du_jour_usd)" -v plafond="$(plafond_jour_usd)" \
     'BEGIN { reste = plafond - depense; if (reste < 0) reste = 0; printf "%.2f\n", reste }'
 }
+
+# ════ Commande d'approbation d'un dossier (2026-10-11, defaut 117, O76) ════
+# Un dossier non approuve dans Claude Code arrete l'agent en code 31. L'alerte
+# disait « lancer une fois claude dans ce dossier » : le 08/10 (T-008), la commande
+# a ete lancee dans la distribution WSL par defaut de ce poste (docker-desktop),
+# qui n'est pas celle du socle, et l'agent n'a rien vu. L'alerte donne desormais
+# la commande exacte, distribution nommee. Tests AP1 et AP3.
+
+# nom_distribution_wsl — nom de la distribution WSL du socle, ou rien hors WSL.
+# WSL_DISTRO_NAME n'existe que dans un terminal : un pipeline lance par l'ecouteur
+# (service systemd) ne l'a pas, on lit alors le nom du systeme dans os-release.
+# ORCH_PROC_VERSION et ORCH_OS_RELEASE ne servent qu'aux tests (AP3).
+nom_distribution_wsl() {
+  local fichier_version="${ORCH_PROC_VERSION:-/proc/version}"
+  local fichier_systeme="${ORCH_OS_RELEASE:-/etc/os-release}"
+  # Lance depuis un terminal WSL : la variable donne le nom exact
+  if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+    printf '%s' "$WSL_DISTRO_NAME"
+    return 0
+  fi
+  # Sous WSL, le noyau se declare « microsoft » ; hors WSL (Mac), on ne rend rien
+  if grep -qi microsoft "$fichier_version" 2>/dev/null; then
+    sed -n 's/^NAME=//p' "$fichier_systeme" 2>/dev/null | tr -d '"' | head -1
+  fi
+}
+
+# commande_approbation_dossier <dossier> — phrase a copier telle quelle qui
+# approuve le dossier dans Claude Code : sous WSL, depuis PowerShell avec la
+# distribution nommee ; ailleurs, depuis un terminal.
+commande_approbation_dossier() {
+  local dossier="$1" distribution
+  distribution="$(nom_distribution_wsl)"
+  if [[ -n "$distribution" ]]; then
+    printf 'depuis PowerShell : wsl -d %s --cd %s -e bash -lc claude' "$distribution" "$dossier"
+  else
+    printf 'dans un terminal : cd %s && claude' "$dossier"
+  fi
+}
