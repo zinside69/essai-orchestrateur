@@ -285,7 +285,10 @@ if (( rcg != 0 )); then
       # a faire ; « approuver » (bouton « Relancer ») relance ensuite la tache.
       transition FAILED
       ESC_RUN="$STATE_DIR/$TASK_ID.escalade-run-task.json"
-      jq -nc --arg rc "$rcg" --arg d "Depot non approuve dans Claude Code ($ROOT) : lancer une fois « claude » dans ce dossier, accepter la confiance, puis repondre approuver." \
+      # AVANT :       jq -nc --arg rc "$rcg" --arg d "Depot non approuve dans Claude Code ($ROOT) : lancer une fois « claude » dans ce dossier, accepter la confiance, puis repondre approuver." \
+      #   (2026-10-11, defaut 117, O76) le geste etait vague : il a ete fait dans
+      #   la mauvaise distribution WSL (T-008, 08/10). Commande exacte, lib.sh.
+      jq -nc --arg rc "$rcg" --arg d "Depot non approuve dans Claude Code ($ROOT). Approuver le dossier une fois, $(commande_approbation_dossier "$ROOT"), repondre oui a la confiance, puis /exit ; ensuite repondre approuver (bouton Relancer)." \
         '{raisons: ["P10:run-task-echoue(rc=" + $rc + ")"], detail: $d}' >"$ESC_RUN"
       "$D/escalade.sh" "$TASK_ID" "$ESC_RUN" || true ;;
     *)

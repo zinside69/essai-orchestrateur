@@ -36,7 +36,10 @@ depot_approuve() {
   return 1
 }
 if ! depot_approuve; then
-  printf '[ERREUR] depot non approuve dans Claude Code : %s — lancer une fois « claude » dans ce dossier et accepter la confiance, puis relancer la tache\n' "$ROOT" >&2
+  # AVANT :   printf '[ERREUR] depot non approuve dans Claude Code : %s — lancer une fois « claude » dans ce dossier et accepter la confiance, puis relancer la tache\n' "$ROOT" >&2
+  #   (2026-10-11, defaut 117, O76) commande exacte, distribution WSL nommee (lib.sh).
+  printf '[ERREUR] depot non approuve dans Claude Code : %s — approuver le dossier une fois, %s, repondre oui a la confiance, puis /exit ; ensuite relancer la tache\n' \
+    "$ROOT" "$(commande_approbation_dossier "$ROOT")" >&2
   exit 31
 fi
 
