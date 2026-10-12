@@ -245,6 +245,13 @@ require curl
 SUJET="$(lire_var_env NTFY_TOPIC_REPONSE)" || die "NTFY_TOPIC_REPONSE absent de $ORCHESTRATEUR_ENV : pas de boutons, rien a ecouter"
 cd "$ROOT"
 log "ecouteur : a l'ecoute de ntfy.sh/<sujet de reponse> pour $ROOT"
+# (2026-10-12, O63) Au demarrage, une ligne par autre projet servi : l'etape 10
+# bis de la procedure d'installation (§ 3.7) se verifie dans le journal
+# (journalctl --user -u orchestrateur-ecouteur), « service actif » ne prouvant
+# pas que le projet est declare. Un chemin ignore y est deja signale. Test MP4.
+while IFS= read -r projet_servi; do
+  log "ecouteur : sert aussi $projet_servi"
+done < <(projets_declares)
 while true; do
   # Reprise apres coupure sans rejouer les messages deja lus : since=<dernier id>.
   depuis="$(cat "$DERNIER" 2>/dev/null || printf 'all')"
