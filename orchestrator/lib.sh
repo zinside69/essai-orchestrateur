@@ -633,3 +633,32 @@ commande_approbation_dossier() {
     printf 'dans un terminal : cd %s && claude' "$dossier"
   fi
 }
+
+# ════ Quota accepte d'une session de l'agent a l'autre (2026-10-12, O68) ════
+# Une acceptation de quota (O29) ne valait que pour le passage de l'agent vu par
+# l'humain : chaque relance la redemandait (T-009 : 5 demandes, de 14f/1309l a
+# 17f/1537l). repondre.sh note desormais la taille acceptee ; elle reste valable
+# tant que le diff ne la depasse pas de plus de QUOTA_MARGE_POURCENT, fichiers et
+# lignes compares separement. Le risque Q3 n'est pas concerne. Tests EC16, DQ4, DQ5.
+QUOTA_MARGE_POURCENT=10
+
+# quota_couvert_par_acceptation <fichier quota-accepte> <fichiers du diff> <lignes du diff>
+# Rend 0 si le diff tient dans la taille acceptee plus la marge, 1 sinon (fichier
+# absent ou illisible compris).
+quota_couvert_par_acceptation() {
+  local fichier_acceptation="$1" fichiers_du_diff="$2" lignes_du_diff="$3"
+  local fichiers_acceptes lignes_acceptees
+  [[ -f "$fichier_acceptation" ]] || return 1
+  fichiers_acceptes="$(sed -n 's/^fichiers=//p' "$fichier_acceptation")"
+  lignes_acceptees="$(sed -n 's/^lignes=//p' "$fichier_acceptation")"
+  # Une valeur absente ou non numerique ne couvre rien
+  [[ "$fichiers_acceptes" =~ ^[0-9]+$ ]] || return 1
+  [[ "$lignes_acceptees" =~ ^[0-9]+$ ]] || return 1
+  # Comparaison en centiemes pour rester en entiers : diff x 100 <= accepte x (100 + marge)
+  local plafond_fichiers_centiemes=$(( fichiers_acceptes * (100 + QUOTA_MARGE_POURCENT) ))
+  local plafond_lignes_centiemes=$(( lignes_acceptees * (100 + QUOTA_MARGE_POURCENT) ))
+  local fichiers_dans_la_marge=0 lignes_dans_la_marge=0
+  (( fichiers_du_diff * 100 <= plafond_fichiers_centiemes )) && fichiers_dans_la_marge=1
+  (( lignes_du_diff * 100 <= plafond_lignes_centiemes )) && lignes_dans_la_marge=1
+  (( fichiers_dans_la_marge == 1 && lignes_dans_la_marge == 1 ))
+}

@@ -374,6 +374,22 @@ if [[ "$MODE_APPROUVER" == controles ]]; then
   log "$TASK_ID : depassement accepte par l'humain ($(tr '\n' ' ' <"$STATE_DIR/$TASK_ID.depassements-acceptes")) — reprise sans agent vers la revue"
   REPRISE_SANS_AGENT=1
 fi
+# (2026-10-12, O68) Taille du quota accepte, gardee d'une session de l'agent a
+# l'autre (lue par gate.sh et decide.sh). Une nouvelle acceptation la remplace.
+if [[ "$MODE_APPROUVER" == controles ]]; then
+  for raison in $RAISONS_OUV; do
+    # Raison attendue : quota:depasse(14f/1309l)
+    [[ "$raison" == quota:depasse\(* ]] || continue
+    taille="${raison#quota:depasse(}"          # 14f/1309l)
+    taille="${taille%)}"                       # 14f/1309l
+    fichiers_acceptes="${taille%%f/*}"         # 14
+    lignes_acceptees="${taille#*f/}"           # 1309l
+    lignes_acceptees="${lignes_acceptees%l}"   # 1309
+    printf 'fichiers=%s\nlignes=%s\n' "$fichiers_acceptes" "$lignes_acceptees" \
+      >"$STATE_DIR/$TASK_ID.quota-accepte"
+    log "$TASK_ID : taille acceptee gardee pour les sessions suivantes (${fichiers_acceptes}f/${lignes_acceptees}l, marge ${QUOTA_MARGE_POURCENT} %)"
+  done
+fi
 # (2026-10-03, O72) Reprise sans agent pour « rejouer » (gardes plus haut, avant --dry-run).
 if [[ "$DECISION_H" == rejouer ]]; then
   log "$TASK_ID : controles, revue et decision rejoues sans agent"
