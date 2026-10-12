@@ -102,6 +102,16 @@ if [[ "$VERDICT" == "PARK" && -f "$STATE_DIR/$TASK_ID.depassements-acceptes" ]] 
   VERDICT="$VERDICT_AVANT_P1"
   log "Plafond depasse (${FILES}f/${LINES}l) accepte par un humain pour ce travail"
 fi
+# (2026-10-12, O68) Meme taille acceptee pour le plafond P1, avec la meme marge :
+# le volume vu et accepte par l'humain n'est pas a accepter une seconde fois.
+if [[ "$VERDICT" == "PARK" && "${RAISONS[*]:-}" == *P1:plafond-depasse* ]] \
+   && quota_couvert_par_acceptation "$STATE_DIR/$TASK_ID.quota-accepte" "$FILES" "$LINES"; then
+  RAISONS_SANS_P1=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == P1:plafond-depasse* ]] || RAISONS_SANS_P1+=("$r"); done
+  RAISONS=("${RAISONS_SANS_P1[@]+"${RAISONS_SANS_P1[@]}"}" "P1:plafond-accepte-humain-taille(${FILES}f/${LINES}l)")
+  VERDICT="$VERDICT_AVANT_P1"
+  log "Plafond depasse (${FILES}f/${LINES}l) dans la taille acceptee par un humain"
+fi
 
 # P2 — chemin absolu (garde-fous)
 if [[ -z "$VERDICT" ]] && HIT="$(touche_motif chemins_absolus)"; then

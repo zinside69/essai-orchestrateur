@@ -152,6 +152,17 @@ if [[ -f "$DEPASSEMENTS_ACCEPTES" ]] && grep -qx quota "$DEPASSEMENTS_ACCEPTES" 
   VERDICT="$VERDICT_AVANT_QUOTA"
   log "Quota depasse (${FILES}f/${LINES}l) accepte par un humain pour ce travail"
 fi
+# (2026-10-12, O68) Quota accepte lors d'une session precedente de l'agent :
+# honore tant que le diff reste dans la taille acceptee plus la marge (lib.sh).
+# Au-dela, la raison quota:depasse reste et l'humain tranche a nouveau.
+if [[ "${RAISONS[*]:-}" == *quota:depasse* ]] \
+   && quota_couvert_par_acceptation "$STATE_DIR/$TASK_ID.quota-accepte" "$FILES" "$LINES"; then
+  RAISONS_SANS_QUOTA=()
+  for r in "${RAISONS[@]}"; do [[ "$r" == quota:depasse* ]] || RAISONS_SANS_QUOTA+=("$r"); done
+  RAISONS=("${RAISONS_SANS_QUOTA[@]+"${RAISONS_SANS_QUOTA[@]}"}" "quota:accepte-humain-taille(${FILES}f/${LINES}l)")
+  VERDICT="$VERDICT_AVANT_QUOTA"
+  log "Quota depasse (${FILES}f/${LINES}l) dans la taille acceptee par un humain (marge ${QUOTA_MARGE_POURCENT} %)"
+fi
 
 # --- 3. Classification de risque ------------------------------------------
 while read -r f; do
