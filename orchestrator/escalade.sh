@@ -411,9 +411,23 @@ Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json su
   # bouton que s'il porte le jeton d'une escalade ouverte et non expiree de cette
   # tache. Qui lit la notification peut appuyer : le secret est le nom du sujet.
   # Les relances n'ont pas de boutons. Tests K7, K8, B1 a B5.
+  # (2026-10-11, defaut 118, O78) Tache deja PUBLISHED : sa PR attend l'humain
+  # sur GitHub. L'escalade previent (notification, e-mail selon le niveau) mais ne
+  # gele pas la tache : gelee, elle passait BLOCKED a l'expiration et reconcile.sh
+  # ne la passait jamais DONE. Pas de bouton non plus : repondre.sh refuserait une
+  # tache PUBLISHED. Exception : une preuve a fournir (P16) attend une reponse
+  # par repondre.sh, la tache est gelee comme avant. Tests DN1, DN2.
+  local etat_avant_escalade="" tache_publiee_sans_reponse_attendue=0
+  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" ]]; then
+    etat_avant_escalade="$(sed -n 's/^etat=//p' "$ETAT_DIR/taches/$TASK_ID.env" | head -1)"
+  fi
+  if [[ "$etat_avant_escalade" == "PUBLISHED" && "$raisons" != *"P16:"* ]]; then
+    tache_publiee_sans_reponse_attendue=1
+  fi
   local jeton="" sujet_rep=""
   ACTIONS_NTFY=""
-  if [[ "$niveau" != "L1" ]] && sujet_rep="$(lire_var_env NTFY_TOPIC_REPONSE)"; then
+  # AVANT :   if [[ "$niveau" != "L1" ]] && sujet_rep="$(lire_var_env NTFY_TOPIC_REPONSE)"; then
+  if [[ "$niveau" != "L1" ]] && (( tache_publiee_sans_reponse_attendue == 0 )) && sujet_rep="$(lire_var_env NTFY_TOPIC_REPONSE)"; then
     jeton="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
     if [[ "$raisons" == *"P9:"* ]]; then
       ACTIONS_NTFY="$(actions_ntfy "$TASK_ID" "$jeton" "$sujet_rep" republier reporter)"
@@ -473,7 +487,9 @@ Diff trop long pour une notification : lire $STATE_DIR/$TASK_ID.demandes.json su
   #   PARKED au lieu de PUBLISHED : reconcile.sh ne la passait jamais DONE et ses
   #   dependantes ne partaient jamais. L1 n'attend aucune reponse : elle ne
   #   suspend rien. Test Y2.
-  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 && "$niveau" != "L1" ]]; then
+  # AVANT :   if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 && "$niveau" != "L1" ]]; then
+  #   (2026-10-11, defaut 118, O78) une tache deja publiee n'est plus gelee (voir plus haut).
+  if [[ -f "$ETAT_DIR/taches/$TASK_ID.env" && $DRY_RUN -eq 0 && "$niveau" != "L1" ]] && (( tache_publiee_sans_reponse_attendue == 0 )); then
     python3 - "$ETAT_DIR/taches/$TASK_ID.env" <<'PY'
 import sys
 p=sys.argv[1]

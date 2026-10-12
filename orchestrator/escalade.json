@@ -41,9 +41,10 @@
   "_commentaire_derivation_p18": "2026-09-29 (ADR 0004 D3) : P18 (ticket sans coutures a tester, avant l agent, decision humaine) en L3. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\", \"P12:*\", \"P14:*\", \"P15:*\", \"P16:*\", \"P17:*\"].",
   "_commentaire_disjoncteur_o16": "2026-09-27 (O16) : cle cout_24h_max_usd retiree ; aucun script ne la lisait (garde-fou annonce mais absent). L'operateur a choisi l'alerte sans arret (22/09) ; a rebrancher, reellement, avant la marche sans surveillance. AVANT : \"cout_24h_max_usd\": 25.0 dans disjoncteur.",
   "_commentaire_derivation_p19": "2026-10-05 (defaut 114, O65 partie 1) : P19 (plafond de depense du jour atteint, avant ou pendant l agent, decision humaine) en L3. AVANT : \"L3\": [\"M3:risque-high\", \"P1:*\", \"P4:*\", \"P6:*\", \"M4:*\", \"P12:*\", \"P14:*\", \"P15:*\", \"P16:*\", \"P17:*\", \"P18:*\"].",
+  "_commentaire_derivation_o78": "2026-10-11 (defaut 118, O78) : Q1, Q3 et Q4 (fusion automatique ramenee a une PR a relire) en L2. La raison M1 restait seule derivable : l'escalade sortait en L1 (digest seul, ni notification ni e-mail, archivee a 48 h) alors que la PR attendait un humain. Niveau choisi par l'operateur : celui d'un desaccord du relecteur. AVANT : \"L2\": [\"M3:desaccord-reviewer\"].",
   "derivation": {
     "L1": ["M1:*", "M2:*"],
-    "L2": ["M3:desaccord-reviewer"],
+    "L2": ["M3:desaccord-reviewer", "Q1:*", "Q3:*", "Q4:*"],
     "L3": ["M3:risque-high", "P1:*", "P4:*", "P6:*", "M4:*", "P12:*", "P14:*", "P15:*", "P16:*", "P17:*", "P18:*", "P19:*"],
     "L4": ["P2:*", "P3:*", "P5:*", "P13:*"]
   },
