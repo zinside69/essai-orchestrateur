@@ -252,6 +252,9 @@ ${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conc
   des noms qui disent ce qu'ils portent, une condition nommée plutôt qu'une double négation,
   une boucle simple plutôt qu'une regex à lookahead, une fonction courte par idée, des alias
   SQL parlants avec un commentaire par condition.
+- Commandes : lance chaque commande au premier plan et attends sa fin avant de passer à la
+  suite ; l'arrière-plan t'est fermé. Une commande laissée en route rend ton travail
+  inachevé et ton compte rendu absent.
 EOF
 if [[ -n "$CONSIGNE_H" ]]; then
   printf '\n## CONSIGNE DE L'"'"'HUMAIN (prioritaire)\n%s\n' "$CONSIGNE_H" >>"$WT/.claude-task.md"
@@ -362,10 +365,15 @@ set +e
 # celle de l'agent. Ces variables l'emportent sur user.name / user.email du depot.
 # (2026-09-24, ADR 0002) ORCH_* : contexte du hook guard-ecriture (tache,
 # perimetre, socle et liste des fichiers critiques du depot principal, worktree).
+# (2026-10-13, O75) Arriere-plan desactive pour l'agent : sur T-009, il lancait des
+# commandes en arriere-plan et terminait sa session sans les attendre ni ecrire son
+# compte rendu. Avec cette variable, l'outil Bash refuse run_in_background
+# (verifie en vrai le 13/10, Claude Code 2.1.281). Test AR1.
 GIT_AUTHOR_NAME="agent-$TASK_ID" GIT_AUTHOR_EMAIL="agent@local" \
 GIT_COMMITTER_NAME="agent-$TASK_ID" GIT_COMMITTER_EMAIL="agent@local" \
 ORCH_AGENT_TACHE="$TASK_ID" ORCH_PERIMETRE="${TACHE[perimetre]:-}" ORCH_SOCLE="$ROOT" ORCH_WT="$WT" \
 ORCH_CRITIQUES="$ROOT/orchestrator/fichiers-critiques.json" \
+CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 \
 claude -p "$PROMPT" "${REPRISE[@]}" \
   --max-budget-usd "$RESTE_DU_JOUR_USD" \
   --model "$MODEL" \
