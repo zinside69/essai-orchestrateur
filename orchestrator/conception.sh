@@ -48,6 +48,8 @@ declare -A TACHE=()
 while IFS='=' read -r k v; do [[ -n "$k" ]] && TACHE[$k]="$v"; done < <(parse_task "$TASK_ID")
 MODELE="$(jq -r '.revue.modele_reviewer' "$ROOT/orchestrator/matrice.json")"
 
+# (2026-10-13, O71) La consigne demande tous les constats en une fois : sur le ticket 05,
+# ils étaient venus par lots (3, 3, 1, puis conforme), soit 4 relectures payées. Test CO10.
 PROMPT="RELECTURE DE CONCEPTION — tâche $TASK_ID
 
 Tu relis la CONCEPTION d'une tâche AVANT qu'un agent la code. Il n'y a aucun code à juger.
@@ -69,6 +71,8 @@ Cherche une PRESCRIPTION (critère, test prescrit, consigne) qui :
    unitaire à la place d'un geste d'écran.
 
 Rends « doute » seulement pour un risque concret, en citant la prescription et le scénario qui casse.
+Relis tout le ticket avant de répondre, puis rends TOUS tes constats en une fois : un constat
+gardé pour une relecture suivante coûte une relecture et un amendement du ticket de plus.
 Dans les textes, cite avec « », jamais avec des guillemets droits (ils cassent le JSON).
 Réponds UNIQUEMENT par un objet JSON, sans texte autour :
 {\"verdict\":\"conforme\"|\"doute\",\"constats\":[{\"prescription\":\"...\",\"risque\":\"...\",\"amendement\":\"...\"}]}"
