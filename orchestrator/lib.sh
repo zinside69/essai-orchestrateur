@@ -662,3 +662,60 @@ quota_couvert_par_acceptation() {
   (( lignes_du_diff * 100 <= plafond_lignes_centiemes )) && lignes_dans_la_marge=1
   (( fichiers_dans_la_marge == 1 && lignes_dans_la_marge == 1 ))
 }
+
+# (2026-10-16, defaut 124, O80) Reglages du sandbox de Claude Code pour l'agent.
+# Mesure du 15/10 : l'agent tourne avec les droits de l'operateur ; un test qu'il
+# ecrit puis lance (npx vitest, npm test) peut lire les secrets de ~ et de /mnt/c
+# et les envoyer par fetch() de Node. Aucun hook ne le ferme : les hooks ne voient
+# que la commande, pas ce que fait le programme lance.
+# Essai du 16/10 (Haiku, Claude Code 2.1.281, 6 passages, 1,37 $) : sans sandbox,
+# node lisait ~/temoin-o80.txt et listait /mnt/c/Users/Said, fetch() sortait (200) ;
+# avec ce bloc : EACCES, /mnt/c masque, fetch en echec (EAI_AGAIN), node demarre.
+# Interdire tout ~ puis rouvrir ~/.nvm ne marche pas (l'interdiction l'emporte,
+# node devient introuvable) : d'ou une liste de chemins interdits. Regle qui en
+# decoule : tout secret de l'operateur se range dans ~/.config ou ~/.orchestrateur.env*.
+# Le sandbox couvre Bash et ses processus enfants ; l'outil Read passe hors sandbox,
+# d'ou les memes chemins en permissions.deny. Tests SB1 a SB3.
+reglages_sandbox_agent() {
+  jq -nc '{
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: false,
+      filesystem: {
+        denyRead: [
+          "~/.orchestrateur.env*",
+          "~/.ssh",
+          "~/.config",
+          "~/.claude",
+          "~/.claude.json",
+          "~/.bash_history",
+          "~/consignes",
+          "~/bac-a-sable/sauvegardes",
+          "~/bac-a-sable/archives",
+          "/mnt/c"
+        ]
+      },
+      network: { allowedDomains: [] }
+    },
+    permissions: {
+      deny: [
+        "Read(~/.orchestrateur.env*)",
+        "Read(~/.ssh/**)",
+        "Read(~/.config/**)",
+        "Read(~/.claude/**)",
+        "Read(~/.claude.json)",
+        "Read(~/.bash_history)",
+        "Read(//mnt/c/**)"
+      ]
+    }
+  }'
+}
+# Ce que veut dire chaque reglage du bloc ci-dessus :
+#   failIfUnavailable          sandbox impossible a demarrer => l'agent ne demarre pas
+#   allowUnsandboxedCommands   false : l'agent ne peut pas relancer une commande hors sandbox
+#   autoAllowBashIfSandboxed   false : la liste d'autorisations du projet continue de decider
+#                              (sinon toute commande Bash sandboxee passerait d'office)
+#   allowedDomains             vide : aucun reseau pour les commandes ; claude lui-meme,
+#                              qui parle a l'API, tourne hors sandbox

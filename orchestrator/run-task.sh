@@ -347,6 +347,11 @@ done
 REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" --arg g "'$ROOT/.claude/hooks/guard-git.sh'" \
   '{hooks:{PreToolUse:[{matcher:"Edit|Write|MultiEdit|NotebookEdit",hooks:[{type:"command",command:$h,timeout:10}]},
                        {matcher:"Bash",hooks:[{type:"command",command:$g,timeout:10}]}]}}')"
+#   (2026-10-16, defaut 124, O80) Sandbox de Claude Code ajoute aux hooks : les
+#   commandes de l'agent et leurs processus enfants ne lisent plus les secrets de ~
+#   ni /mnt/c, et n'ont pas de reseau (reglages_sandbox_agent, lib.sh). Fusion, les
+#   deux hooks ci-dessus restent. Tests SB1 a SB3.
+REGLAGES_AGENT="$(jq -nc --argjson hooks "$REGLAGES_AGENT" --argjson sandbox "$(reglages_sandbox_agent)" '$hooks + $sandbox')"
 
 # (2026-09-29, ADR 0004 D1.3) Tete de la branche notee juste avant l'agent,
 # comparee juste apres (avant l'etape 7) : un commit de l'agent se DETECTE, quelle
