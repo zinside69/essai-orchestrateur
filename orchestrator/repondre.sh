@@ -274,9 +274,19 @@ retirer_fautifs() {
       d="$(git_du_worktree "$WT_T" diff "$base" HEAD -- "$f")"
       j="$(jq -r --arg f "$f" '[(.demandes_ecriture // [])[] | select(.fichier == $f) | .justification] | first // empty' \
         "$STATE_DIR/$TASK_ID.compte-rendu.json" 2>/dev/null || true)"
-      jq --arg f "$f" --arg d "$d" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
+      # (2026-10-23, defaut 133) Le diff passe a jq par un fichier (--rawfile), jamais en
+      # argument : au-dela de 128 Ko (MAX_ARG_STRLEN), jq ne demarrait pas (« Argument list too
+      # long ») et la demande de ce fichier etait perdue sans le dire (vu sur T-010, rapport
+      # vitest de 1 164 tests). printf est une commande interne : aucune limite d'argument. Le
+      # contenu est celui de l'ancien argument (pas de saut de ligne ajoute). Test NG1.
+      # AVANT :       jq --arg f "$f" --arg d "$d" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
+      local fichier_du_diff
+      fichier_du_diff="$(mktemp)"
+      printf '%s' "$d" >"$fichier_du_diff"
+      jq --arg f "$f" --rawfile d "$fichier_du_diff" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
         '. + [{fichier:$f, besoin:"retire par nettoyage (P13)", justification:$j, diff:$d, origine:"nettoyage"}]' \
         "$tmp" >"$tmp.n" && mv "$tmp.n" "$tmp"
+      rm -f "$fichier_du_diff"
     done
     # Demandes deja deposees par l'agent pour d'autres fichiers : conservees.
     if [[ -s "$STATE_DIR/$TASK_ID.demandes.json" ]]; then
