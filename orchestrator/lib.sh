@@ -83,7 +83,23 @@ preparer_worktree() {
   local wt="$1" script="$ROOT/orchestrator/preparer-worktree.sh" journal
   [[ -f "$script" ]] || return 0
   journal="$LOG_DIR/preparation-$(basename "$wt").log"
-  ( cd "$wt" && ROOT="$ROOT" bash "$script" ) >"$journal" 2>&1 \
+  # (2026-10-23, O80) La preparation tourne dans le sandbox des controles. Essai temoin du
+  # 23/10 : a la reprise d'une tache, le worktree porte le travail commite de l'agent ; un
+  # .npmrc de sa main (script-shell) faisait lancer son programme par le « npm run » de la
+  # preparation, hors sandbox, avec les droits de l'operateur. Dans le sandbox, la vraie
+  # preparation d'iziGSM rend les memes fichiers. ROOT y est transmis
+  # (VARIABLES_PERMISES_AU_SANDBOX) ; le worktree est le seul dossier ouvert en ecriture.
+  # Test SB32.
+  # Sans sandbox utilisable (bwrap absent, comme sur le Mac, ou incapable de demarrer), la
+  # preparation est refusee, jamais lancee hors sandbox (decision de l'utilisateur du 23/10),
+  # et le message d'arret dit pourquoi : lancer_dans_le_sandbox ne le dirait que dans le
+  # journal. Test SB33.
+  if ! sandbox_disponible; then
+    die "preparation du worktree refusee : bwrap (bubblewrap) introuvable ou incapable de demarrer, elle ne tourne jamais hors sandbox ($wt)"
+  fi
+  # AVANT :   ( cd "$wt" && ROOT="$ROOT" bash "$script" ) >"$journal" 2>&1 \
+  # AVANT :     || die "preparation du worktree en echec : $wt (voir $journal)"
+  lancer_dans_le_sandbox "$wt" bash "$script" >"$journal" 2>&1 \
     || die "preparation du worktree en echec : $wt (voir $journal)"
   log "Worktree prepare par le projet : $wt"
 }
@@ -95,7 +111,9 @@ preparer_worktree() {
 # committes (fiche de tache .claude-task.md).
 exclure_localement() {
   local depot="$1" motif="$2" exclude
-  exclude="$(git -C "$depot" rev-parse --git-path info/exclude)"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : exclude="$(git -C "$depot" rev-parse --git-path info/exclude)"
+  exclude="$(git_du_worktree "$depot" rev-parse --git-path info/exclude)"
   [[ "$exclude" == /* ]] || exclude="$depot/$exclude"
   mkdir -p "$(dirname "$exclude")"
   grep -qxF -- "$motif" "$exclude" 2>/dev/null || printf '%s\n' "$motif" >>"$exclude"
@@ -329,13 +347,19 @@ verifier_demandes_ecriture() {
     # la ligne vide obtenue serait lue par --recount comme une ligne de contexte.
     jq -j --argjson i "$index" \
       '.[$i].diff | if endswith("\n") then . else . + "\n" end' "$demandes" >"$fichier_du_diff"
-    if git -C "$worktree" apply --check "$fichier_du_diff" >/dev/null 2>&1; then
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : if git -C "$worktree" apply --check "$fichier_du_diff" >/dev/null 2>&1; then
+    if git_du_worktree "$worktree" apply --check "$fichier_du_diff" >/dev/null 2>&1; then
       continue    # la demande s'applique telle quelle
     fi
-    if git -C "$worktree" apply --check --recount "$fichier_du_diff" >/dev/null 2>&1; then
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : if git -C "$worktree" apply --check --recount "$fichier_du_diff" >/dev/null 2>&1; then
+    if git_du_worktree "$worktree" apply --check --recount "$fichier_du_diff" >/dev/null 2>&1; then
       jq --argjson i "$index" '.[$i].en_tete_recompte = true' "$demandes" >"$demandes.tmp"
     else
-      raison_donnee_par_git="$(git -C "$worktree" apply --check --recount "$fichier_du_diff" 2>&1 | head -3 || true)"
+      # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+      # AVANT : raison_donnee_par_git="$(git -C "$worktree" apply --check --recount "$fichier_du_diff" 2>&1 | head -3 || true)"
+      raison_donnee_par_git="$(git_du_worktree "$worktree" apply --check --recount "$fichier_du_diff" 2>&1 | head -3 || true)"
       jq --argjson i "$index" --arg raison "$raison_donnee_par_git" \
         '.[$i].applicable = false | .[$i].raison_git = $raison' "$demandes" >"$demandes.tmp"
     fi
@@ -719,3 +743,353 @@ reglages_sandbox_agent() {
 #                              (sinon toute commande Bash sandboxee passerait d'office)
 #   allowedDomains             vide : aucun reseau pour les commandes ; claude lui-meme,
 #                              qui parle a l'API, tourne hors sandbox
+
+# (2026-10-16, defaut 125, O80) Caches de vite ouverts en ecriture a l'agent.
+# Passage reel T-009 du 16/10 : le node_modules d'un worktree est un lien vers celui
+# du depot principal, hors de la zone d'ecriture du sandbox ; vitest s'arretait avant
+# tout test (EROFS sur node_modules/.vite-temp). Essai temoin : rouge EROFS, vert
+# « 6 passed » avec ces deux dossiers seulement. Le reste du node_modules partage
+# reste en lecture seule : un agent ne peut pas modifier une dependance que les
+# controles, lances hors sandbox, utiliseraient ensuite. Tests SB4 et SB5.
+# ouvrir_caches_partages_agent <reglages json> <worktree>
+ouvrir_caches_partages_agent() {
+  local reglages="$1" worktree="$2" node_modules_partage
+  # node_modules propre au worktree, ou absent : deja inscriptible, ou rien a ouvrir
+  if [[ ! -L "$worktree/node_modules" ]]; then
+    printf '%s' "$reglages"
+    return 0
+  fi
+  # (2026-10-18, defaut 127) Le chemin ne se lit plus dans le worktree, que l'agent tient :
+  # seul le node_modules du depot principal est reconnu (node_modules_partage_verifie).
+  # AVANT :   node_modules_partage="$(readlink -f "$worktree/node_modules")"
+  # AVANT :   # Les dossiers doivent exister pour que le sandbox puisse les monter en ecriture
+  # AVANT :   mkdir -p "$node_modules_partage/.vite-temp" "$node_modules_partage/.vite"
+  if ! node_modules_partage="$(node_modules_partage_verifie "$worktree")"; then
+    printf '%s' "$reglages"
+    return 0
+  fi
+  jq -c --arg fichiers_temporaires "$node_modules_partage/.vite-temp" \
+        --arg cache "$node_modules_partage/.vite" \
+    '.sandbox.filesystem.allowWrite = [$fichiers_temporaires, $cache]' <<<"$reglages"
+}
+
+# (2026-10-18, defaut 127, O80) node_modules partage, verifie du cote du harnais. Revue de
+# securite de f7f293b : le chemin des caches se lisait dans le worktree, que l'agent tient.
+# Un node_modules (ou un .vite) remplace par un lien vers ~ aurait ouvert ~ en ecriture dans
+# le sandbox (~/.bashrc, execute ensuite hors sandbox). Reconnu seulement si :
+#   - le node_modules du worktree est un lien ;
+#   - le node_modules du depot principal (ROOT) est un vrai dossier ;
+#   - le lien du worktree mene exactement a lui ;
+#   - ses caches .vite-temp et .vite sont de vrais dossiers (crees s'ils manquent).
+# Rend le chemin du node_modules du depot principal, ou echoue (rien n'est ouvert ni vide).
+# Tests SB4, SB9, SB10, SB11.
+# (2026-10-22, defaut 129) Vrai si le depot principal (ROOT) a un node_modules qui est un
+# vrai dossier, et non un lien vers un autre dossier.
+depot_principal_a_un_vrai_node_modules() {
+  [[ -d "$ROOT/node_modules" && ! -L "$ROOT/node_modules" ]]
+}
+
+# node_modules_partage_verifie <worktree>
+node_modules_partage_verifie() {
+  local worktree="$1" attendu obtenu cache
+  # Pas de lien : node_modules propre au worktree (deja inscriptible) ou absent
+  [[ -L "$worktree/node_modules" ]] || return 1
+  # Le depot principal doit avoir un vrai node_modules
+  # (2026-10-22, defaut 129) Condition nommee, partagee avec vider_caches_partages_agent.
+  # AVANT :   if [[ ! -d "$ROOT/node_modules" || -L "$ROOT/node_modules" ]]; then
+  if ! depot_principal_a_un_vrai_node_modules; then
+    return 1
+  fi
+  attendu="$(readlink -f "$ROOT/node_modules")"
+  obtenu="$(readlink -f "$worktree/node_modules")"
+  if [[ "$obtenu" != "$attendu" ]]; then
+    printf '[ATTENTION] node_modules du worktree %s : il ne mene pas au depot principal, caches de vite non ouverts\n' "$worktree" >&2
+    return 1
+  fi
+  for cache in "$attendu/.vite-temp" "$attendu/.vite"; do
+    # Un cache remplace par un lien designerait un autre dossier : refus
+    if [[ -L "$cache" ]]; then
+      printf '[ATTENTION] %s est un lien : caches de vite non ouverts\n' "$cache" >&2
+      return 1
+    fi
+    mkdir -p "$cache"
+  done
+  printf '%s\n' "$attendu"
+}
+
+# (2026-10-18, defaut 126, O80) Les caches de vite partages sont vides apres la session
+# de l'agent (revue de securite du commit 3451e62) : l'agent y ecrit, et une commande
+# lancee hors sandbox a la racine du projet (npm test de l'operateur) chargerait un
+# cache qu'il aurait prepare. Seul le contenu des deux caches part, pas les dependances.
+# Test SB9.
+# vider_caches_partages_agent <worktree>
+# (2026-10-22, defaut 129) Le worktree (argument) n'est plus consulte : le vidage se faisait
+# apres le code de l'agent, qui pouvait remplacer le lien node_modules par un vrai dossier
+# (ou le supprimer) et ainsi empecher le vidage. Seul compte le depot principal (ROOT) ;
+# un cache qui est lui-meme un lien n'est jamais vide (il designerait un autre dossier).
+# L'argument reste pour les quatre appelants (run-task, gate, test-rouge, mutation). Test SB17.
+# AVANT : vider_caches_partages_agent() {
+# AVANT :   local worktree="$1" node_modules_partage cache
+vider_caches_partages_agent() {
+  local node_modules_du_depot="$ROOT/node_modules" cache
+  # (2026-10-18, defaut 127) Seul le node_modules du depot principal est vide : un lien
+  # pose par l'agent ne designe jamais ce qui est efface.
+  # AVANT :   # node_modules propre au worktree, ou absent : rien de partage a vider
+  # AVANT :   [[ -L "$worktree/node_modules" ]] || return 0
+  # AVANT :   node_modules_partage="$(readlink -f "$worktree/node_modules")"
+  # AVANT :   node_modules_partage="$(node_modules_partage_verifie "$worktree")" || return 0
+  # Le depot principal doit avoir un vrai node_modules
+  if ! depot_principal_a_un_vrai_node_modules; then
+    return 0
+  fi
+  # AVANT :   for cache in "$node_modules_partage/.vite-temp" "$node_modules_partage/.vite"; do
+  for cache in "$node_modules_du_depot/.vite-temp" "$node_modules_du_depot/.vite"; do
+    # Un cache remplace par un lien n'est pas vide : il designerait un autre dossier
+    if [[ -L "$cache" ]]; then
+      printf '[ATTENTION] %s est un lien : non vide\n' "$cache" >&2
+      continue
+    fi
+    [[ -d "$cache" ]] || continue
+    # AVANT :     find "$cache" -mindepth 1 -delete
+    find "$cache" -xdev -mindepth 1 -delete
+  done
+}
+
+# (2026-10-18, defaut 126, O80) Chemins secrets a masquer dans le sandbox des controles,
+# tires de la liste denyRead de reglages_sandbox_agent : une seule liste pour l'agent et
+# pour les controles. « ~ » devient le dossier personnel ; un motif (« .orchestrateur.env* »)
+# rend chaque fichier qui existe. Un chemin absent n'est pas rendu : rien a masquer.
+chemins_secrets_a_masquer() {
+  local motif chemin
+  while IFS= read -r motif; do
+    motif="${motif/#\~/$HOME}"
+    for chemin in $motif; do
+      [[ -e "$chemin" ]] && printf '%s\n' "$chemin"
+    done
+  done < <(reglages_sandbox_agent | jq -r '.sandbox.filesystem.denyRead[]')
+}
+
+# (2026-10-18, defaut 128, O80) Le sandbox des controles peut-il demarrer ? A demander
+# AVANT une mesure dont l'echec est le bon resultat (test-rouge.sh, mutation.sh) : sans
+# bubblewrap, lancer_dans_le_sandbox refuse et rend 125, un echec qui se lirait sinon
+# comme « tests vus rouges » ou « mutation vue rouge ». Tests SB14 et SB16.
+# Present ne suffit pas (code-review du defaut 128) : bwrap installe mais incapable de
+# demarrer (espaces de noms utilisateur refuses, AppArmor) sort en 1. D'ou un vrai essai,
+# avec la meme isolation reseau que les controles.
+# (2026-10-22, defaut 129) L'essai emploie les options fixes du vrai lancement : un bwrap
+# trop ancien, ou des espaces de noms de processus refuses, faisaient echouer le vrai
+# lancement (rc 1, lu « rouge ») alors que l'essai simple passait. Test SB21.
+sandbox_disponible() {
+  command -v bwrap >/dev/null 2>&1 || return 1
+  # AVANT :   bwrap --ro-bind / / --unshare-net true >/dev/null 2>&1
+  bwrap "${OPTIONS_FIXES_DU_SANDBOX[@]}" /bin/sh -c : >/dev/null 2>&1
+}
+
+# (2026-10-22, defaut 129, O80) Options du sandbox des controles qui ne dependent pas de la
+# commande lancee ; une seule liste, pour l'essai de disponibilite et le vrai lancement :
+#   --ro-bind / /, --dev, --proc, --tmpfs /tmp  tout en lecture seule, /tmp prive
+#   --unshare-net                               aucun reseau
+#   --die-with-parent                           le sandbox meurt si le harnais meurt
+#   --unshare-pid                               ses processus meurent avec lui (un processus
+#                                               detache survivait et reecrivait les caches
+#                                               apres leur vidage ; test SB18) et /proc ne
+#                                               montre plus ceux de l'operateur
+#   --new-session                               pas d'injection de touches dans le terminal
+#                                               qui a lance le controle (TIOCSTI ; non teste,
+#                                               faute de terminal reel dans la batterie)
+#   --clearenv                                  environnement vide ; les seules variables
+#                                               permises sont reposees ensuite (test SB19)
+OPTIONS_FIXES_DU_SANDBOX=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --die-with-parent
+                          --unshare-pid --new-session --clearenv)
+
+# (2026-10-22, defaut 129, O80) Variables d'environnement transmises au sandbox des
+# controles ; toutes les autres sont effacees (le code de l'agent voyait GH_TOKEN, les cles
+# d'API exportees...). Releve du 22/10 sur les trois bacs a sable : les controles lisent
+# PATH et HOME (node, npx), ROOT et ORCH_E2E_BASE (controle e2e), ORCH_RAPPORTS (rapports).
+# Ajouter une variable ici = la montrer au code de l'agent. Test SB19.
+VARIABLES_PERMISES_AU_SANDBOX=(PATH HOME USER LOGNAME LANG LC_ALL LC_NUMERIC TERM TZ ROOT ORCH_RAPPORTS ORCH_E2E_BASE)
+
+# (2026-10-18, defaut 126, O80) Lance une commande dans bubblewrap, avec les memes
+# interdits que l'agent. Essai temoin du 18/10 : gate.sh lancait par « bash -c », hors
+# sandbox, les tests ecrits par l'agent ; un test piege lisait ~/temoin-o80.txt et
+# sortait sur le reseau (fetch 200). Dans ce sandbox : EACCES, EAI_AGAIN, et tsc, vitest
+# et toute la suite d'iziGSM rendent le meme resultat qu'hors sandbox. Tests SB6 a SB8.
+# lancer_dans_le_sandbox <worktree> <commande> [arguments...]
+lancer_dans_le_sandbox() {
+  local worktree="$1"; shift
+  local options=() chemin node_modules_partage cache
+  # Sans bubblewrap, rien ne part hors sandbox : la commande est refusee (controle rouge)
+  # (2026-10-22, defaut 128) Un seul test de disponibilite, qui essaie vraiment de demarrer.
+  # AVANT :   if ! command -v bwrap >/dev/null 2>&1; then
+  # AVANT :     printf '[ERREUR] bwrap (bubblewrap) introuvable : commande refusee, elle ne tourne jamais hors sandbox\n' >&2
+  if ! sandbox_disponible; then
+    printf '[ERREUR] bwrap (bubblewrap) introuvable ou incapable de demarrer : commande refusee, elle ne tourne jamais hors sandbox\n' >&2
+    return 125
+  fi
+  # Tout le disque en lecture seule, /tmp prive, aucun reseau
+  # (2026-10-22, defaut 129) Options fixes dans OPTIONS_FIXES_DU_SANDBOX (processus propres,
+  # nouvelle session, environnement vide en plus), partagees avec sandbox_disponible.
+  # AVANT :   options+=(--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --die-with-parent)
+  options+=("${OPTIONS_FIXES_DU_SANDBOX[@]}")
+  # (2026-10-22, defaut 129) Les seules variables permises qui ont une valeur ici sont
+  # reposees dans l'environnement vide. « ${!variable} » lit la variable dont le nom est dans
+  # « variable » ; « ${!variable+existe} » vaut « existe » si cette variable est definie,
+  # meme vide, et rien sinon. Test SB19.
+  local variable
+  for variable in "${VARIABLES_PERMISES_AU_SANDBOX[@]}"; do
+    if [[ -n "${!variable+existe}" ]]; then
+      options+=(--setenv "$variable" "${!variable}")
+    fi
+  done
+  # Secrets masques AVANT les montages en ecriture : bubblewrap applique les options dans
+  # l'ordre, et le masque de /mnt/c cacherait sinon un worktree range sous /mnt/c.
+  # Un dossier est remplace par un dossier vide, un fichier par un fichier vide.
+  while IFS= read -r chemin; do
+    if [[ -d "$chemin" ]]; then
+      options+=(--tmpfs "$chemin")
+    else
+      options+=(--ro-bind /dev/null "$chemin")
+    fi
+  done < <(chemins_secrets_a_masquer)
+  # En ecriture : le worktree, les rapports des controles, les caches de vite partages
+  options+=(--bind "$worktree" "$worktree")
+  if [[ -n "${ORCH_RAPPORTS:-}" && -d "$ORCH_RAPPORTS" ]]; then
+    options+=(--bind "$ORCH_RAPPORTS" "$ORCH_RAPPORTS")
+  fi
+  # (2026-10-18, defaut 127) Caches pris du depot principal, jamais du lien de l'agent.
+  # AVANT :   if [[ -L "$worktree/node_modules" ]]; then
+  # AVANT :     node_modules_partage="$(readlink -f "$worktree/node_modules")"
+  # AVANT :     for cache in "$node_modules_partage/.vite-temp" "$node_modules_partage/.vite"; do
+  # AVANT :       mkdir -p "$cache"
+  # AVANT :       options+=(--bind "$cache" "$cache")
+  # AVANT :     done
+  # AVANT :   fi
+  if node_modules_partage="$(node_modules_partage_verifie "$worktree")"; then
+    for cache in "$node_modules_partage/.vite-temp" "$node_modules_partage/.vite"; do
+      options+=(--bind "$cache" "$cache")
+    done
+  fi
+  bwrap "${options[@]}" --chdir "$worktree" "$@"
+}
+
+# (2026-10-22, defaut 130, O80) Dossier git d'un worktree, lu dans le depot principal (ROOT),
+# jamais dans le worktree. Le depot principal tient une fiche par worktree
+# (.git/worktrees/<nom>/gitdir) qui contient le chemin du fichier .git du worktree ; on cherche
+# celle qui le designe. Rend le dossier de cette fiche, ou echoue si le worktree est inconnu du
+# depot principal. Chemins absolus seulement (worktree.useRelativePaths, git 2.48, non pris en
+# charge : ouvert O80). Test SB22.
+dossier_git_du_worktree() {
+  local worktree dossier_commun fiche
+  worktree="$(realpath -e "$1")" || return 1
+  dossier_commun="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  for fiche in "$dossier_commun"/worktrees/*/gitdir; do
+    [[ -f "$fiche" ]] || continue
+    if [[ "$(cat "$fiche")" == "$worktree/.git" ]]; then
+      dirname "$fiche"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# (2026-10-22, defaut 130, O80) Le fichier .git du worktree designe-t-il toujours le dossier
+# attendu ? C'est un fichier du worktree, donc de l'agent : un lien, un dossier, ou un fichier
+# qui pointe ailleurs est un detournement.
+# fichier_git_intact <worktree> <dossier git attendu> ; rend 0 si intact. Tests SB22 a SB25.
+fichier_git_intact() {
+  local worktree="$1" dossier_git_attendu="$2" premiere_ligne cible
+  [[ -f "$worktree/.git" && ! -L "$worktree/.git" ]] || return 1
+  IFS= read -r premiere_ligne <"$worktree/.git" || return 1
+  [[ "$premiere_ligne" == "gitdir: "* ]] || return 1
+  cible="${premiere_ligne#gitdir: }"
+  [[ "$(realpath -e "$cible" 2>/dev/null)" == "$(realpath -e "$dossier_git_attendu")" ]]
+}
+
+# (2026-10-22, defaut 131, O80) Le worktree contient-il un depot imbrique (un .git, fichier ou
+# dossier, sous sa racine) ? Un tel depot a sa propre config, donc celle de l'agent : un git du
+# socle sur le worktree y lance un git enfant (« cd src/x; git status --porcelain=2 ») qui la
+# lit, et un filtre « clean » qu'elle declare tourne hors sandbox (essai temoin du 22/10,
+# git 2.53 : status, diff et add -A). Les liens ne sont pas suivis (find sans -L), comme git.
+# depot_imbrique_dans <worktree> : nomme le premier trouve et rend 0 ; rend 1 s'il n'y en a
+# aucun. Une recherche incomplete (dossier illisible) ne prouve pas qu'il n'y en a aucun :
+# elle rend 0 aussi, en le disant (code-review du 22/10). Tests SB30, SB31.
+depot_imbrique_dans() {
+  local worktree="$1" premier_depot_imbrique recherche_complete=true
+  # -iname : sur un systeme de fichiers insensible a la casse (APFS du Mac), git ouvre .GIT
+  # comme .git (code-review du 22/10). Test SB30.
+  premier_depot_imbrique="$(find "$worktree" -mindepth 2 -iname .git -print -quit 2>/dev/null)" \
+    || recherche_complete=false
+  if [[ -n "$premier_depot_imbrique" ]]; then
+    printf '%s\n' "$premier_depot_imbrique"
+    return 0
+  fi
+  if [[ "$recherche_complete" == false ]]; then
+    printf 'impossible a exclure : dossier illisible sous %s\n' "$worktree"
+    return 0
+  fi
+  return 1
+}
+
+# (2026-10-22, defaut 130, O80) git du socle sur le worktree d'un agent. Essai temoin du 22/10
+# (git 2.53) : un .git reecrit vers un faux depot, ou remplace par un dossier, dont
+# core.fsmonitor nomme un programme de l'agent ; un simple « git -C worktree status » du socle
+# lancait ce programme hors sandbox, avec les droits de l'operateur. Ici le dossier git vient
+# du depot principal, un .git modifie est refuse, et aucun programme nomme par une config n'est
+# lance (hooks, fsmonitor) : un core.hooksPath relatif (.githooks) se lisait dans le worktree de
+# l'agent. Les hooks du projet ne tournent donc pas pour les commandes du socle sur un
+# worktree ; le push de publisher.sh, lance depuis ROOT, garde ceux de l'operateur.
+# Sert aussi le depot principal lui-meme (decide.sh et review.sh le recoivent sans worktree),
+# toujours sans hook ni fsmonitor. Seul chemin du socle vers git sur un worktree. Tests SB22, SB26.
+# git_du_worktree <worktree ou ROOT> <arguments de git...>
+git_du_worktree() {
+  local worktree="$1"; shift
+  local dossier_git
+  # Le depot principal lui-meme (decide.sh et review.sh le recoivent sans worktree) : son .git
+  # appartient a l'operateur, pas a un agent ; meme refus des hooks et du fsmonitor
+  if [[ "$(realpath -e "$worktree" 2>/dev/null)" == "$(realpath -e "$ROOT")" ]]; then
+    git -C "$ROOT" -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+    return
+  fi
+  if ! dossier_git="$(dossier_git_du_worktree "$worktree")"; then
+    printf '[ERREUR] %s : worktree inconnu du depot principal (%s), git refuse\n' "$worktree" "$ROOT" >&2
+    return 1
+  fi
+  if ! fichier_git_intact "$worktree" "$dossier_git"; then
+    printf '[ERREUR] %s/.git modifie (attendu : gitdir: %s) : detournement possible par l agent, git refuse\n' \
+      "$worktree" "$dossier_git" >&2
+    return 1
+  fi
+  # (2026-10-22, defaut 131) Un depot imbrique ferait lire sa config, celle de l'agent, par un
+  # git enfant lance hors sandbox : refuse, comme un .git modifie. Tests SB30, SB31.
+  local depot_imbrique
+  if depot_imbrique="$(depot_imbrique_dans "$worktree")"; then
+    printf '[ERREUR] %s : depot imbrique (%s), sa config est celle de l agent, git refuse\n' \
+      "$worktree" "$depot_imbrique" >&2
+    return 1
+  fi
+  git -C "$worktree" --git-dir="$dossier_git" --work-tree="$worktree" \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+}
+
+# (2026-10-22, defaut 130, O80) Garde d'entree des scripts qui lancent git sur le worktree d'un
+# agent (gate.sh, decide.sh, review.sh, publisher.sh, repondre.sh, mutation.sh).
+# exiger_un_worktree_intact <worktree> <ce qui allait se faire>
+# Rend la main si le .git du worktree est intact, ou si le « worktree » est le depot principal
+# lui-meme. Sinon, dit ce qui est refuse et arrete le script (code 1), avant toute commande git
+# et tout controle. Pourquoi a l'entree : un refus de git_du_worktree lu par « $( ) » ou par
+# « < <( ) » restait muet — liste vide, diff lu comme vide — et publisher.sh aurait publie sans
+# voir de fichier fautif. run-task.sh ne l'emploie pas : apres l'agent, il sort en 36 pour que
+# pipeline.sh escalade (P13:git-detourne). Tests SB24, SB25, SB27 a SB29.
+exiger_un_worktree_intact() {
+  local worktree="$1" ce_qui_allait_se_faire="$2"
+  # git_du_worktree dit sur stderr la cause exacte (.git modifie, ou worktree inconnu du depot
+  # principal) : elle reste visible, juste avant le refus qui nomme ce qui ne se fera pas
+  if git_du_worktree "$worktree" rev-parse --git-dir >/dev/null; then
+    return 0
+  fi
+  # (2026-10-22, defaut 131) Troisieme cause, depuis le defaut 131 : un depot imbrique dans le
+  # worktree, ou un dossier illisible qui empeche de l'exclure (git_du_worktree). Le debut du
+  # message est garde (SB25, SB27 a SB29 le cherchent). Tests SB30, SB31.
+  # AVANT :   die "worktree au .git detourne ou inconnu du depot principal ($worktree) : $ce_qui_allait_se_faire refuse"
+  die "worktree au .git detourne, inconnu du depot principal ou contenant un depot imbrique ($worktree) : $ce_qui_allait_se_faire refuse"
+}

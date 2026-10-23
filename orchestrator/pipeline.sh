@@ -279,6 +279,24 @@ if (( rcg != 0 )); then
         '{raisons: ["P13:commit-agent"],
           detail: ("L agent a commite lui-meme (" + $c + ") malgre la consigne (ADR 0004) : rien n est publie, branche en quarantaine. nettoyer = le harnais garde le travail en un seul commit a lui, meme contenu, puis relance les controles sans agent ; relancer = nouvel essai de l agent ; refuser = abandon.")}' >"$ESC_COMMIT"
       "$D/escalade.sh" "$TASK_ID" "$ESC_COMMIT" || true ;;
+    36)
+      # (2026-10-22, O80) Le .git du worktree a ete modifie par l'agent : rien commite,
+      # aucune commande git du harnais sur ce worktree. P13:git-detourne (L4), branche en
+      # quarantaine depuis ROOT (le depot principal, que l'agent ne tient pas). Quarantaine :
+      # memes lignes que le cas 34, dupliquees et non deplacees (regle additive). Test SB23.
+      transition PARKED
+      QUAR="quarantine/$TASK_ID"
+      git -C "$ROOT" rev-parse -q --verify "refs/heads/$QUAR" >/dev/null && QUAR="quarantine/$TASK_ID-$(date -u +%Y%m%dT%H%M%S)"
+      git -C "$ROOT" branch "$QUAR" "$AGENT_BRANCH_PREFIX/$TASK_ID" \
+        && log "$TASK_ID : branche de l'agent mise en quarantaine ($QUAR) — .git detourne"
+      ESC_GIT="$STATE_DIR/$TASK_ID.escalade-git.json"
+      # (2026-10-22, defaut 131) Le code 36 vient aussi d'un depot imbrique cree par l'agent
+      # (git_du_worktree, lib.sh) : le detail nomme les deux causes et dit ou lire la bonne.
+      # AVANT : jq -nc '{raisons: ["P13:git-detourne"],
+      # AVANT :   detail: "Le fichier .git du worktree de l agent a ete modifie pendant sa session (il pouvait faire lancer un programme par le git du socle, hors sandbox). Rien n est commite ni publie, branche en quarantaine. Examiner le worktree avant tout geste, puis le retirer a la main (git worktree remove --force depuis le depot du projet, non verifie sur un .git detourne) ; relancer = nouvel essai de l agent ; refuser = abandon."}' >"$ESC_GIT"
+      jq -nc --arg journal "logs/pipeline-$TASK_ID.log" '{raisons: ["P13:git-detourne"],
+          detail: ("Le fichier .git du worktree de l agent a ete modifie pendant sa session, ou l agent y a cree un depot imbrique (un .git sous la racine, dont la config est la sienne) : l un comme l autre pouvait faire lancer un programme par le git du socle, hors sandbox. La cause exacte (ligne [ERREUR]) est dans le journal du pipeline de la tache (" + $journal + "). Rien n est commite ni publie, branche en quarantaine. Examiner le worktree avant tout geste, puis le retirer a la main (git worktree remove --force depuis le depot du projet, non verifie sur un .git detourne) ; relancer = nouvel essai de l agent ; refuser = abandon.")}' >"$ESC_GIT"
+      "$D/escalade.sh" "$TASK_ID" "$ESC_GIT" || true ;;
     31)
       # (2026-09-24, O1) Depot non approuve dans Claude Code : rien n'a tourne,
       # rien n'a coute. Meme escalade P10 qu'une panne, mais l'alerte dit le geste

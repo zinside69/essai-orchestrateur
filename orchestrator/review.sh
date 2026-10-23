@@ -8,6 +8,9 @@ source "$(dirname "$0")/lib.sh"
 TASK_ID="${1:?usage: review.sh T-NNN}"
 WT="${2:?chemin du worktree}"
 BASE="${3:-$INTEGRATION_BRANCH}"
+# (2026-10-22, O80) Garde d'entree (lib.sh) : review.sh donne au relecteur le diff lu par git ;
+# un .git detourne lui ferait relire un diff vide. Test SB27.
+exiger_un_worktree_intact "$WT" "la revue"
 # AVANT : MODELE_AUTEUR="${MODELE_AUTEUR:-sonnet}"
 #   (2026-09-28, O49) Une seule source : matrice.json (identifiant exact).
 MODELE_AUTEUR="${MODELE_AUTEUR:-$(jq -r '.revue.modele_auteur' "$ROOT/orchestrator/matrice.json")}"
@@ -44,7 +47,9 @@ grep -qE 'transcript_path|run-\$?\{?TASK_ID|\.jsonl' "$AGENT_FILE" \
   && isolation_invalide "V3 — la définition du reviewer référence une source de session"
 
 # --- V4 : l'entrée est un fichier de diff, jamais du contenu de session ---
-git -C "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : git -C "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
+git_du_worktree "$WT" diff "$BASE"...HEAD --unified=40 >"$DIFF"
 [[ -s "$DIFF" ]] || isolation_invalide "V4 — diff vide, aucune entrée à relire"
 
 # --- Prompt : diff + déclaration de tâche + invariants. Rien d'autre -------

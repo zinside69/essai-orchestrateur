@@ -10,6 +10,9 @@ VERDICT_GATE="${2:?chemin vers state/T-NNN.verdict.json}"
 REVUE="${3:?chemin vers state/T-NNN.revue.json}"
 WT="${4:-$ROOT}"
 BASE="${5:-$INTEGRATION_BRANCH}"
+# (2026-10-22, O80) Garde d'entree (lib.sh) : decide.sh lit le diff de l'agent par git ; un .git
+# detourne ferait lire un diff vide, donc une decision sur rien. Test SB27.
+exiger_un_worktree_intact "$WT" "la decision"
 
 M="$ROOT/orchestrator/matrice.json"
 require git jq sha256sum
@@ -77,7 +80,9 @@ touche_motif() {
     while read -r pat; do
       match_glob "$f" "$pat" && { printf '%s\n' "$f"; return 0; }
     done < <(jq -r --arg k "$motif_set" '.[$k][]' "$M")
-  done < <(git -C "$WT" diff --name-only "$BASE"...HEAD)
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : done < <(git -C "$WT" diff --name-only "$BASE"...HEAD)
+  done < <(git_du_worktree "$WT" diff --name-only "$BASE"...HEAD)
   return 1
 }
 
@@ -122,7 +127,9 @@ fi
 if [[ -z "$VERDICT" ]]; then
   while read -r re; do
     [[ -z "$re" ]] && continue
-    if git -C "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : if git -C "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
+    if git_du_worktree "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
       VERDICT="PARK"; RAISONS+=("P3:motif-secret")
       break
     fi
@@ -169,9 +176,13 @@ if [[ -z "$VERDICT" ]]; then
       match_glob "$f" "$pat" && { IN=1; break; }
     done < <(jq -r '.chemins_automerge[]' "$M")
     (( IN == 1 )) || CHEMINS_SURS=0
-  done < <(git -C "$WT" diff --name-only "$BASE"...HEAD)
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : done < <(git -C "$WT" diff --name-only "$BASE"...HEAD)
+  done < <(git_du_worktree "$WT" diff --name-only "$BASE"...HEAD)
 
-  SUPPS=$(git -C "$WT" diff --name-only --diff-filter=D "$BASE"...HEAD | wc -l | tr -d ' ')
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : SUPPS=$(git -C "$WT" diff --name-only --diff-filter=D "$BASE"...HEAD | wc -l | tr -d ' ')
+  SUPPS=$(git_du_worktree "$WT" diff --name-only --diff-filter=D "$BASE"...HEAD | wc -l | tr -d ' ')
   DEPS=0
   touche_motif fichiers_dependances >/dev/null && DEPS=1
 

@@ -64,7 +64,9 @@ dans_perimetre() {
 # CE fichier : sert a reconnaitre une modification approuvee (demande appliquee)
 # tant qu'elle n'a pas ete retouchee depuis.
 empreinte_diff_fichier() {
-  git -C "$1" diff "$2" "$3" -- "$4" | sha256sum | cut -d' ' -f1
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$1" diff "$2" "$3" -- "$4" | sha256sum | cut -d' ' -f1
+  git_du_worktree "$1" diff "$2" "$3" -- "$4" | sha256sum | cut -d' ' -f1
 }
 
 # fichiers_fautifs <depot> <base> <tete> <perimetre> [approuvees] — une ligne
@@ -91,5 +93,7 @@ fichiers_fautifs() {
     elif ! dans_perimetre "$perimetre" "$f"; then
       printf 'hors-perimetre:%s\n' "$f"
     fi
-  done < <(git -C "$depot" diff --name-only "$base" "$tete")
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : done < <(git -C "$depot" diff --name-only "$base" "$tete")
+  done < <(git_du_worktree "$depot" diff --name-only "$base" "$tete")
 }

@@ -7,9 +7,16 @@ source "$(dirname "$0")/lib.sh"
 # shellcheck disable=SC1091
 source "$(dirname "$0")/critiques.sh"
 
-TASK_ID="${1:?usage: gate.sh T-NNN [branche-base]}"
+# (2026-10-22, defaut 129) Usage aligne sur le worktree devenu obligatoire.
+# AVANT : TASK_ID="${1:?usage: gate.sh T-NNN [branche-base]}"
+TASK_ID="${1:?usage: gate.sh T-NNN <branche-base> <worktree de l agent>}"
 BASE="${2:-$INTEGRATION_BRANCH}"
-WT="${3:-$ROOT}"
+# (2026-10-22, defaut 129) Le worktree est obligatoire : les controles executent le code de
+# l'agent dans un sandbox qui ouvre ce dossier en ecriture. Par defaut, c'etait ROOT : tout le
+# depot principal (.claude/hooks, orchestrator/) ouvert au code de l'agent. Les appelants
+# (pipeline.sh, run-task.sh) le passent deja. Test SB20.
+# AVANT : WT="${3:-$ROOT}"
+WT="${3:?usage: gate.sh T-NNN <branche-base> <worktree de l agent> (le worktree est obligatoire : il est ouvert en ecriture aux controles)}"
 
 require git jq sha256sum
 
@@ -20,6 +27,15 @@ GATES_PROOF=()
 DEBUT_TS="$(date +%s)"
 
 cd "$WT"
+
+# (2026-10-22, O80) Refus avant tout controle si le .git du worktree a ete detourne : gate.sh
+# lance git hors sandbox sur ce worktree (repondre.sh rejouer, mutation). Test SB24.
+exiger_un_worktree_intact "$WT" "tout controle"
+
+# (2026-10-18, defaut 127) Les controles executent le code de l'agent, qui peut ecrire
+# dans les caches de vite partages : ils sont vides a la sortie de gate.sh, verte, rouge
+# ou en erreur, pour qu'aucune commande lancee ensuite hors sandbox ne les charge. Test SB11.
+trap 'vider_caches_partages_agent "$WT"' EXIT
 
 # --- 1. Gates techniques (preuve d'exécution, Phase 5 / P1-a) -------------
 # Chaque gate laisse une sortie brute horodatée dont le SHA-256 est scellé
@@ -108,25 +124,48 @@ if [[ -f "$GATES_CFG" ]]; then
       RAISONS+=("gate:non-configure:$g")
       continue
     fi
-    run_gate "$g" bash -c "$cmd"
+    # (2026-10-18, defaut 126, O80) Le controle execute le code ecrit par l'agent (ses
+    # tests) : il tourne dans le sandbox, avec les memes interdits que l'agent (lib.sh).
+    # Sans bubblewrap, la commande est refusee et le controle rouge. Tests SB6 a SB8.
+    # AVANT :     run_gate "$g" bash -c "$cmd"
+    run_gate "$g" lancer_dans_le_sandbox "$WT" bash -c "$cmd"
   done
 else
+  # (2026-10-18, defaut 126) Memes controles par defaut, dans le sandbox.
+  # AVANT :   [[ -f package.json ]] && {
+  # AVANT :     run_gate lint      npm run lint      --silent
+  # AVANT :     run_gate typecheck npm run typecheck --silent
+  # AVANT :     run_gate test      npm run test      --silent
+  # AVANT :     run_gate build     npm run build     --silent
+  # AVANT :   }
   [[ -f package.json ]] && {
-    run_gate lint      npm run lint      --silent
-    run_gate typecheck npm run typecheck --silent
-    run_gate test      npm run test      --silent
-    run_gate build     npm run build     --silent
+    run_gate lint      lancer_dans_le_sandbox "$WT" npm run lint      --silent
+    run_gate typecheck lancer_dans_le_sandbox "$WT" npm run typecheck --silent
+    run_gate test      lancer_dans_le_sandbox "$WT" npm run test      --silent
+    run_gate build     lancer_dans_le_sandbox "$WT" npm run build     --silent
   }
 fi
 
+# (2026-10-22, O80) Les controles viennent de tourner, worktree ouvert en ecriture : leur code
+# (celui de l'agent) a pu reecrire le .git. Nouvelle verification avant les commandes git du
+# harnais ; sans elle, chaque « $(git_du_worktree ...) » ci-dessous refuserait en silence et
+# le verdict lirait un diff vide. Test SB25.
+exiger_un_worktree_intact "$WT" "le verdict apres les controles"
+
 # Diff sale ou espaces en fin de ligne
-git diff --check "$BASE"...HEAD >/dev/null 2>&1 || {
+# (2026-10-22, O80) git du harnais par git_du_worktree (lib.sh) : dossier git du depot
+# principal, ni hook ni fsmonitor. Tests SB24, SB25.
+# AVANT : git diff --check "$BASE"...HEAD >/dev/null 2>&1 || {
+git_du_worktree "$WT" diff --check "$BASE"...HEAD >/dev/null 2>&1 || {
   VERDICT="red"; RAISONS+=("diff:dirty")
 }
 
 # --- 2. Quota de diff ----------------------------------------------------
-FILES=$(git diff --name-only "$BASE"...HEAD | wc -l | tr -d ' ')
-LINES=$(git diff --numstat "$BASE"...HEAD | awk '{a += $1 + $2} END {print a + 0}')
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : FILES=$(git diff --name-only "$BASE"...HEAD | wc -l | tr -d ' ')
+# AVANT : LINES=$(git diff --numstat "$BASE"...HEAD | awk '{a += $1 + $2} END {print a + 0}')
+FILES=$(git_du_worktree "$WT" diff --name-only "$BASE"...HEAD | wc -l | tr -d ' ')
+LINES=$(git_du_worktree "$WT" diff --numstat "$BASE"...HEAD | awk '{a += $1 + $2} END {print a + 0}')
 
 MAX_FILES="${MAX_FILES:-25}"
 MAX_LINES="${MAX_LINES:-800}"
@@ -179,7 +218,9 @@ while read -r f; do
     # skills.json redefinit ses propres controles. Decision humaine.
     orchestrator/*|.claude/*|.githooks/*)                       RISK="high"; RAISONS+=("risque:socle:$f") ;;
   esac
-done < <(git diff --name-only "$BASE"...HEAD)
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : done < <(git diff --name-only "$BASE"...HEAD)
+done < <(git_du_worktree "$WT" diff --name-only "$BASE"...HEAD)
 
 # --- 3 ter. Doctrine d'ecriture (ADR 0002, verrou 3 : detecter apres) --------
 # Un fichier critique ou hors perimetre touche malgre le hook (contournement par
@@ -190,7 +231,9 @@ done < <(git diff --name-only "$BASE"...HEAD)
 # retouche depuis, est autorise (empreinte ecrite par repondre.sh). Avant ce
 # controle, le perimetre n'etait qu'une phrase de la consigne de l'agent.
 PERIMETRE_TACHE="$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')"
-MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+MERGE_BASE="$(git_du_worktree "$WT" merge-base "$BASE" HEAD)"
 FAUTIFS=()
 while IFS= read -r faute; do
   [[ -n "$faute" ]] && FAUTIFS+=("$faute")
