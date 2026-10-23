@@ -250,9 +250,14 @@ retirer_fautifs() {
   local avec_demandes="$1" base perim patch f d j tmp
   local -a fautifs excl
   [[ -d "$WT_T" ]] || die "$DECISION_H : worktree $WT_T absent"
+  # (2026-10-22, O80) Garde d'entree (lib.sh) : « nettoyer » refait la branche dans ce worktree
+  # (diff, reset --hard, apply, commit) ; jamais sur un .git detourne. Test SB28.
+  exiger_un_worktree_intact "$WT_T" "$DECISION_H"
   git -C "$ROOT" rev-parse -q --verify "refs/heads/quarantine/$TASK_ID" >/dev/null \
     || git -C "$ROOT" branch "quarantine/$TASK_ID" "$AGENT_BRANCH_PREFIX/$TASK_ID"
-  base="$(git -C "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : base="$(git -C "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
+  base="$(git_du_worktree "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
   perim="$(parse_task "$TASK_ID" | sed -n 's/^perimetre=//p')"
   mapfile -t fautifs < <(cd "$WT_T" && fichiers_fautifs "$WT_T" "$base" HEAD "$perim" \
     "$STATE_DIR/$TASK_ID.demandes-appliquees" | cut -d: -f2-)
@@ -264,7 +269,9 @@ retirer_fautifs() {
   if [[ "$avec_demandes" == 1 ]]; then
     tmp="$(mktemp)"; printf '[]\n' >"$tmp"
     for f in "${fautifs[@]}"; do
-      d="$(git -C "$WT_T" diff "$base" HEAD -- "$f")"
+      # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+      # AVANT : d="$(git -C "$WT_T" diff "$base" HEAD -- "$f")"
+      d="$(git_du_worktree "$WT_T" diff "$base" HEAD -- "$f")"
       j="$(jq -r --arg f "$f" '[(.demandes_ecriture // [])[] | select(.fichier == $f) | .justification] | first // empty' \
         "$STATE_DIR/$TASK_ID.compte-rendu.json" 2>/dev/null || true)"
       jq --arg f "$f" --arg d "$d" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
@@ -281,12 +288,21 @@ retirer_fautifs() {
   fi
   for f in "${fautifs[@]}"; do excl+=(":(exclude,literal)$f"); done
   patch="$(mktemp)"
-  git -C "$WT_T" diff --binary "$base" HEAD -- . "${excl[@]}" >"$patch"
-  git -C "$WT_T" reset -q --hard "$base"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$WT_T" diff --binary "$base" HEAD -- . "${excl[@]}" >"$patch"
+  git_du_worktree "$WT_T" diff --binary "$base" HEAD -- . "${excl[@]}" >"$patch"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$WT_T" reset -q --hard "$base"
+  git_du_worktree "$WT_T" reset -q --hard "$base"
   if [[ -s "$patch" ]]; then
-    git -C "$WT_T" apply --index "$patch"
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : git -C "$WT_T" apply --index "$patch"
+    git_du_worktree "$WT_T" apply --index "$patch"
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : GIT_COMMITTER_NAME=harnais-orchestrateur GIT_COMMITTER_EMAIL=harnais@local \
+    # AVANT :   git -C "$WT_T" -c user.name="agent-$TASK_ID" -c user.email=agent@local \
     GIT_COMMITTER_NAME=harnais-orchestrateur GIT_COMMITTER_EMAIL=harnais@local \
-      git -C "$WT_T" -c user.name="agent-$TASK_ID" -c user.email=agent@local \
+      git_du_worktree "$WT_T" -c user.name="agent-$TASK_ID" -c user.email=agent@local \
       commit -q -m "$TASK_ID: travail de l'agent, fichiers fautifs retires par le harnais (P13, decision humaine)"
   fi
   rm -f "$patch"
@@ -301,6 +317,9 @@ appliquer_demandes() {
   local dem="$STATE_DIR/$TASK_ID.demandes.json" p base f
   local -a fichiers
   [[ -d "$WT_T" ]] || die "approuver : worktree $WT_T absent — escalade maintenue"
+  # (2026-10-22, O80) Garde d'entree (lib.sh) : « approuver » applique et commite les demandes
+  # dans ce worktree ; jamais sur un .git detourne. Meme garde que « nettoyer » (test SB28).
+  exiger_un_worktree_intact "$WT_T" "approuver (demandes d'ecriture)"
   # (2026-10-03, defaut 109, O70) Une demande marquee inapplicable a la reception
   # (verifier_demandes_ecriture, lib.sh) est refusee ici, avant tout changement :
   # l'alerte l'a dit, approuver ne peut rien ecrire. Test DA2.
@@ -323,15 +342,23 @@ appliquer_demandes() {
   #   de ligne ; sans --recount, le resultat est le meme qu'avant. Test DA1.
   jq -j '.[].diff | if endswith("\n") then . else . + "\n" end' "$dem" >"$p"
   # AVANT :   git -C "$WT_T" apply --check "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
-  git -C "$WT_T" apply --check "${options_de_git_apply[@]}" "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$WT_T" apply --check "${options_de_git_apply[@]}" "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
+  git_du_worktree "$WT_T" apply --check "${options_de_git_apply[@]}" "$p" 2>>"$LOG_DIR/pipeline-$TASK_ID.log" \
     || die "approuver : une demande ne s'applique pas telle quelle — escalade maintenue ($dem)"
   # AVANT :   git -C "$WT_T" apply --index "$p"
-  git -C "$WT_T" apply --index "${options_de_git_apply[@]}" "$p"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$WT_T" apply --index "${options_de_git_apply[@]}" "$p"
+  git_du_worktree "$WT_T" apply --index "${options_de_git_apply[@]}" "$p"
   rm -f "$p"
   mapfile -t fichiers < <(jq -r '.[].fichier' "$dem")
-  git -C "$WT_T" -c user.name=harnais-orchestrateur -c user.email=harnais@local \
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : git -C "$WT_T" -c user.name=harnais-orchestrateur -c user.email=harnais@local \
+  git_du_worktree "$WT_T" -c user.name=harnais-orchestrateur -c user.email=harnais@local \
     commit -q -m "$TASK_ID: demande(s) d'ecriture approuvee(s) par un humain, appliquee(s) telle(s) quelle(s) — ${fichiers[*]}"
-  base="$(git -C "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
+  # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+  # AVANT : base="$(git -C "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
+  base="$(git_du_worktree "$WT_T" merge-base "$INTEGRATION_BRANCH" HEAD)"
   for f in "${fichiers[@]}"; do
     printf '%s\t%s\n' "$f" "$(empreinte_diff_fichier "$WT_T" "$base" HEAD "$f")" >>"$STATE_DIR/$TASK_ID.demandes-appliquees"
   done

@@ -352,11 +352,17 @@ REGLAGES_AGENT="$(jq -nc --arg h "'$ROOT/.claude/hooks/guard-ecriture.sh'" --arg
 #   ni /mnt/c, et n'ont pas de reseau (reglages_sandbox_agent, lib.sh). Fusion, les
 #   deux hooks ci-dessus restent. Tests SB1 a SB3.
 REGLAGES_AGENT="$(jq -nc --argjson hooks "$REGLAGES_AGENT" --argjson sandbox "$(reglages_sandbox_agent)" '$hooks + $sandbox')"
+#   (2026-10-16, defaut 125) Si le node_modules du worktree est un lien vers celui du
+#   depot principal, ses seuls caches de vite sont ouverts en ecriture : sans eux,
+#   vitest s'arrete sous le sandbox (EROFS, passage reel T-009). Tests SB4 et SB5.
+REGLAGES_AGENT="$(ouvrir_caches_partages_agent "$REGLAGES_AGENT" "$WT")"
 
 # (2026-09-29, ADR 0004 D1.3) Tete de la branche notee juste avant l'agent,
 # comparee juste apres (avant l'etape 7) : un commit de l'agent se DETECTE, quelle
 # que soit la forme qui a echappe au hook. Test GG3.
-TETE_AVANT="$(git -C "$WT" rev-parse HEAD)"
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : TETE_AVANT="$(git -C "$WT" rev-parse HEAD)"
+TETE_AVANT="$(git_du_worktree "$WT" rev-parse HEAD)"
 
 # (2026-10-05, defaut 114, O65 partie 1) Budget de cette session de l'agent : ce
 # qui reste du plafond de depense du jour (60 $ par jour, tous projets, jour de
@@ -390,6 +396,20 @@ claude -p "$PROMPT" "${REPRISE[@]}" \
   >"$LOG" 2>&1
 CLAUDE_RC=$?
 set -e
+# (2026-10-18, defaut 126) Caches de vite partages vides des la fin de la session de
+# l'agent : un cache qu'il aurait prepare ne sera charge par rien hors sandbox. Test SB9.
+vider_caches_partages_agent "$WT"
+# (2026-10-22, defaut 130, O80) Le .git du worktree est-il intact apres l'agent ? Verifie ici,
+# avant la premiere commande git du harnais sur ce worktree (verifier_demandes_ecriture, plus
+# bas), ou un refus de git_du_worktree serait muet : la demande serait marquee inapplicable,
+# avec ce refus pour raison (code-review du 22/10). Le compte rendu et le cout sont gardes ;
+# la sortie en 36 vient apres la capture du cout (etape 6). Test SB23.
+# (2026-10-22, defaut 131) « Intact » veut dire aussi : sans depot imbrique (un .git sous la
+# racine, dont la config serait celle de l'agent), refuse par git_du_worktree. Test SB31.
+worktree_intact_apres_l_agent=true
+if ! git_du_worktree "$WT" rev-parse --git-dir >/dev/null; then
+  worktree_intact_apres_l_agent=false
+fi
 # Consigne consommee : elle ne sera pas redonnee a la relance suivante (EC13).
 [[ -z "$CONSIGNE_H" ]] || sed -i 's/^consigne_humaine=.*/consigne_humaine=/' "$FICHE_TACHE"
 # (2026-10-04, defaut 112, O57) Le fichier de la consigne entiere est consomme aussi.
@@ -416,7 +436,12 @@ if [[ -f "$WT/$COMPTE_RENDU_AGENT" ]]; then
          | . + {origine: "agent"}]' "$CR_ETAT" >"$STATE_DIR/$TASK_ID.demandes.json"
     # (2026-10-03, defaut 109, O70) Chaque demande retenue est verifiee contre le
     # worktree : en-tete de hunk recompte, ou demande marquee inapplicable. Tests DA1, DA2.
-    verifier_demandes_ecriture "$WT" "$STATE_DIR/$TASK_ID.demandes.json"
+    # (2026-10-22, defaut 130, O80) Jamais a travers un .git detourne : la demande reste telle
+    # quelle, la tache sort en 36 plus bas et l'humain examine le worktree. Test SB23.
+    # AVANT :     verifier_demandes_ecriture "$WT" "$STATE_DIR/$TASK_ID.demandes.json"
+    if [[ "$worktree_intact_apres_l_agent" == true ]]; then
+      verifier_demandes_ecriture "$WT" "$STATE_DIR/$TASK_ID.demandes.json"
+    fi
     DEM_ECARTEES="$(jq '[(.demandes_ecriture // [])[]] | length' "$CR_ETAT")"
     DEM_ECARTEES=$(( DEM_ECARTEES - $(jq length "$STATE_DIR/$TASK_ID.demandes.json") ))
     (( DEM_ECARTEES == 0 )) || log "Demande(s) d'ecriture ecartee(s) faute de diff : $DEM_ECARTEES"
@@ -487,7 +512,28 @@ log "Session ${SESSION_ID:-inconnue} | coût ${COUT:-0} USD | $TOURS tours"
 # rien par-dessus (il signerait un historique qu'il n'a pas ecrit) et sort en 34 ;
 # pipeline.sh met la branche en quarantaine et escalade P13:commit-agent (L4).
 # Compte rendu et cout sont deja journalises ci-dessus. Tests GG3, GG4.
-TETE_APRES="$(git -C "$WT" rev-parse HEAD)"
+# (2026-10-22, defaut 130, O80) Le .git du worktree est un fichier de l'agent : un .git
+# detourne vers un faux depot faisait lancer par le « git status » ci-dessous un programme de
+# l'agent, hors sandbox (core.fsmonitor ; essai temoin du 22/10). Verifie des la fin de la
+# session de l'agent (worktree_intact_apres_l_agent, plus haut) ; detourne => code 36,
+# pipeline.sh en fait P13:git-detourne (L4, quarantaine). Toutes les commandes git suivantes
+# passent par git_du_worktree (lib.sh). Test SB23.
+# (2026-10-22, defaut 131) Meme voie pour un depot imbrique cree par l'agent : son filtre
+# « clean » aurait tourne hors sandbox au « git add -A » ci-dessous, qui l'aurait aussi commite
+# comme gitlink. La ligne d'etat garde son nom (git_detourne=) : pipeline.sh et les tests la
+# lisent. Test SB31.
+if [[ "$worktree_intact_apres_l_agent" == false ]]; then
+  printf 'git_detourne=%s/.git\n' "$WT" >>"$STATE"
+  # (2026-10-22, defaut 131) Meme sortie pour un depot imbrique cree par l'agent ; la cause
+  # exacte est dans le refus de git_du_worktree, plus haut dans le meme journal
+  # (logs/pipeline-T-NNN.log, ou pipeline.sh renvoie la sortie d'erreur). Test SB31.
+  # AVANT :   log "Le .git du worktree a ete modifie pendant l'agent : aucune commande git du harnais, P13:git-detourne"
+  log "Le .git du worktree a ete modifie, ou un depot imbrique cree, pendant l'agent : aucune commande git du harnais, P13:git-detourne"
+  cd "$ROOT"
+  exit 36
+fi
+# AVANT : TETE_APRES="$(git -C "$WT" rev-parse HEAD)"
+TETE_APRES="$(git_du_worktree "$WT" rev-parse HEAD)"
 if [[ "$TETE_APRES" != "$TETE_AVANT" ]]; then
   printf 'commit_agent=%s..%s\n' "$TETE_AVANT" "$TETE_APRES" >>"$STATE"
   log "L'agent a commite lui-meme ($TETE_AVANT..$TETE_APRES) : aucun commit du harnais, P13:commit-agent (ADR 0004)"
@@ -497,9 +543,15 @@ fi
 
 # --- 7. Commit automatique (agent) ---------------------------------------
 cd "$WT"
-if [[ -n "$(git status --porcelain)" ]]; then
-  git add -A
-  git -c user.name="agent-$TASK_ID" -c user.email="agent@local" \
+# (2026-10-22, O80) git du harnais par git_du_worktree : dossier git du depot principal,
+# ni hook ni fsmonitor. Test SB23.
+# AVANT : if [[ -n "$(git status --porcelain)" ]]; then
+# AVANT :   git add -A
+# AVANT :   git -c user.name="agent-$TASK_ID" -c user.email="agent@local" \
+# AVANT :       commit -q -m "$TASK_ID: implémentation automatique (session ${SESSION_ID:-n/a})"
+if [[ -n "$(git_du_worktree "$WT" status --porcelain)" ]]; then
+  git_du_worktree "$WT" add -A
+  git_du_worktree "$WT" -c user.name="agent-$TASK_ID" -c user.email="agent@local" \
       commit -q -m "$TASK_ID: implémentation automatique (session ${SESSION_ID:-n/a})"
   log "Commit agent créé sur $BRANCH"
 fi

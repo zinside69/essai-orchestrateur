@@ -24,13 +24,18 @@ TASK_ID="${1:?usage: mutation.sh T-NNN <worktree>}"
 WT_AGENT="${2:?usage: mutation.sh T-NNN <worktree>}"
 PREUVES="$STATE_DIR/$TASK_ID.preuves.json"
 G="$ROOT/orchestrator/gates.json"
+# (2026-10-22, O80) Garde d'entree (lib.sh), avant meme de savoir s'il y a une mutation a jouer :
+# un worktree au .git detourne se dit a chaque passage, jamais en silence. Test SB27.
+exiger_un_worktree_intact "$WT_AGENT" "la preuve par mutation"
 
 [[ -f "$PREUVES" ]] || exit 0
 N="$(jq '[.[] | select(.type == "mutation" and .statut == "a_fournir")] | length' "$PREUVES")"
 (( N > 0 )) || exit 0
 require git jq
 
-COMMIT="$(git -C "$WT_AGENT" rev-parse HEAD)"
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : COMMIT="$(git -C "$WT_AGENT" rev-parse HEAD)"
+COMMIT="$(git_du_worktree "$WT_AGENT" rev-parse HEAD)"
 mkdir -p "$LOG_DIR"
 
 # consigner <id> <resultat> <statut> <detail>
@@ -50,6 +55,12 @@ while IFS= read -r id; do
     consigner "$id" inapplicable a_fournir "controle « $controle » absent de gates.json"
     continue
   fi
+  # (2026-10-22, defaut 128, O80) Le sandbox doit pouvoir demarrer avant toute copie. Sans
+  # lui, preuve a fournir : un refus ne vaut jamais « rouge vu ». Tests SB14 et SB16.
+  if ! sandbox_disponible; then
+    consigner "$id" inapplicable a_fournir "bwrap introuvable ou incapable de demarrer : controle non lance, aucun code de l'agent hors sandbox"
+    continue
+  fi
   copie="$(mktemp -d)/mutation-$TASK_ID"
   journal="$LOG_DIR/mutation-$TASK_ID-$id.log"
   if ! sous_verrou_depot git -C "$ROOT" worktree add -q --detach "$copie" "$COMMIT" >"$journal" 2>&1; then
@@ -60,17 +71,24 @@ while IFS= read -r id; do
   (
     preparer_worktree "$copie"
     jq -r --arg id "$id" '.[] | select(.id == $id) | .diff' "$PREUVES" >"$copie/.mutation.diff"
-    if ! git -C "$copie" apply "$copie/.mutation.diff" >>"$journal" 2>&1; then
+    # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+    # AVANT : if ! git -C "$copie" apply "$copie/.mutation.diff" >>"$journal" 2>&1; then
+    if ! git_du_worktree "$copie" apply "$copie/.mutation.diff" >>"$journal" 2>&1; then
       consigner "$id" inapplicable a_fournir "git apply refuse la mutation (voir $journal)"
       exit 0
     fi
     rm -f "$copie/.mutation.diff"
-    if ( cd "$copie" && bash -c "$cmd" ) >>"$journal" 2>&1; then
+    # (2026-10-18, defaut 128, O80) Le controle rejoue le code de l'agent : il tourne dans
+    # le sandbox (lib.sh), dont la disponibilite est verifiee avant la copie. Test SB13.
+    # AVANT :     if ( cd "$copie" && bash -c "$cmd" ) >>"$journal" 2>&1; then
+    if lancer_dans_le_sandbox "$copie" bash -c "$cmd" >>"$journal" 2>&1; then
       consigner "$id" reste-vert a_fournir "controle « $controle » vert sous la mutation : le test ne garde pas le defaut"
     else
       consigner "$id" rouge-vu soldee "controle « $controle » rouge sous la mutation"
     fi
   ) || consigner "$id" inapplicable a_fournir "preparation de la copie en echec (voir $journal)"
+  # (2026-10-18, defaut 128) Caches de vite partages vides avant de retirer la copie. Test SB15.
+  vider_caches_partages_agent "$copie" || true
   sous_verrou_depot git -C "$ROOT" worktree remove --force "$copie" >>"$journal" 2>&1 || rm -rf "$copie"
   rmdir "$(dirname "$copie")" 2>/dev/null || true
 done < <(jq -r '.[] | select(.type == "mutation" and .statut == "a_fournir") | .id' "$PREUVES")

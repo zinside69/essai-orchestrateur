@@ -59,21 +59,42 @@ while IFS= read -r f; do
 done < <(git -C "$ROOT" diff --name-only --diff-filter=AMR "$INTEGRATION_BRANCH...$BRANCH")
 (( ${#FICHIERS[@]} > 0 )) || { ecrire aucun-test; exit 0; }
 
+# 1 bis. (2026-10-22, defaut 128, O80) Le sandbox doit pouvoir demarrer. Sans lui, la mesure
+# est impossible : « erreur », jamais « rouge » (un refus se lirait comme une preuve). La cause
+# est ecrite dans le journal de la mesure. Tests SB14 et SB16.
+if ! sandbox_disponible; then
+  printf 'test-rouge %s : bwrap introuvable ou incapable de demarrer, controle non lance (aucun code de l agent hors sandbox)\n' \
+    "$TASK_ID" >>"$JOURNAL"
+  ecrire erreur; exit 0
+fi
+
 # 2. Worktree temporaire sur l'integration, avec les seuls tests de l'agent.
 if git -C "$ROOT" worktree list --porcelain | grep -q "$WT_ROUGE"; then
   git -C "$ROOT" worktree remove --force "$WT_ROUGE" || true
 fi
-nettoyer() { git -C "$ROOT" worktree remove --force "$WT_ROUGE" >/dev/null 2>&1 || true; }
+# (2026-10-18, defaut 128) Les tests de l'agent tournent dans le sandbox et peuvent ecrire
+# dans les caches de vite partages : vides avant de retirer le worktree. Test SB15.
+# AVANT : nettoyer() { git -C "$ROOT" worktree remove --force "$WT_ROUGE" >/dev/null 2>&1 || true; }
+nettoyer() {
+  vider_caches_partages_agent "$WT_ROUGE" || true
+  git -C "$ROOT" worktree remove --force "$WT_ROUGE" >/dev/null 2>&1 || true
+}
 trap nettoyer EXIT
 if ! git -C "$ROOT" worktree add -q --detach "$WT_ROUGE" "$INTEGRATION_BRANCH" >>"$JOURNAL" 2>&1; then
   ecrire erreur; exit 0
 fi
 preparer_worktree "$WT_ROUGE"
-git -C "$WT_ROUGE" checkout -q "$BRANCH" -- "${FICHIERS[@]}"
+# (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
+# AVANT : git -C "$WT_ROUGE" checkout -q "$BRANCH" -- "${FICHIERS[@]}"
+git_du_worktree "$WT_ROUGE" checkout -q "$BRANCH" -- "${FICHIERS[@]}"
 
 # 3. Le controle doit echouer sans le code de l'agent.
+# (2026-10-18, defaut 128, O80) Ce sont les tests de l'agent : ils tournent dans le sandbox
+# (lib.sh), comme les controles de gate.sh ; la disponibilite du sandbox est verifiee avant
+# le worktree temporaire (etape 1 bis).
 set +e
-( cd "$WT_ROUGE" && bash -c "$CMD" ) >>"$JOURNAL" 2>&1
+# AVANT : ( cd "$WT_ROUGE" && bash -c "$CMD" ) >>"$JOURNAL" 2>&1
+lancer_dans_le_sandbox "$WT_ROUGE" bash -c "$CMD" >>"$JOURNAL" 2>&1
 RC=$?
 set -e
 if (( RC != 0 )); then ecrire rouge "$RC"; else ecrire jamais-rouge "$RC"; fi
