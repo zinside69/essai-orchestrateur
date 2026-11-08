@@ -127,9 +127,20 @@ fi
 if [[ -z "$VERDICT" ]]; then
   while read -r re; do
     [[ -z "$re" ]] && continue
+    # (2026-10-23, defaut 134) Un motif qui commence par « (?i) » (syntaxe PCRE, celui des
+    # secrets generiques : password, token, api_key...) est cherche SANS ce prefixe et sans
+    # distinction de casse. « grep -E » ne connait pas « (?i) » : le motif n'attrapait jamais
+    # rien, et un mot de passe en clair ajoute par l'agent recevait AUTO_MERGE (test SC1).
+    # Les autres motifs (AKIA..., ghp_...) restent sensibles a la casse.
+    options_de_grep=(-Eq)
+    if [[ "$re" == "(?i)"* ]]; then
+      options_de_grep=(-Eiq)
+      re="${re#"(?i)"}"
+    fi
     # (2026-10-22, defaut 130, O80) via git_du_worktree (lib.sh), jamais par le .git de l'agent. Test SB26.
     # AVANT : if git -C "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
-    if git_du_worktree "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
+    # AVANT : if git_du_worktree "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep -Eq -- "$re"; then
+    if git_du_worktree "$WT" diff "$BASE"...HEAD -U0 | grep -E "^\+" | grep "${options_de_grep[@]}" -- "$re"; then
       VERDICT="PARK"; RAISONS+=("P3:motif-secret")
       break
     fi

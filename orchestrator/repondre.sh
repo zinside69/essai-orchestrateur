@@ -191,6 +191,14 @@ if [[ "$DECISION_H" == approuver ]] && (( COUTURES_OUV == 1 )); then
   MODE_APPROUVER="relancer"
   CIBLE="READY"
 fi
+# (2026-10-23, defaut 135) Integration en retard sur la branche de production (P20) : aucun
+# travail d'agent n'existe. « approuver » = l'humain a resynchronise l'integration : relance,
+# et la garde REPASSE avant l'agent. « modifier » : voir plus bas (passer outre). Test DP3.
+RETARD_PRODUCTION_OUV=0; [[ "$RAISONS_OUV" == *P20:* ]] && RETARD_PRODUCTION_OUV=1
+if [[ "$DECISION_H" == approuver ]] && (( RETARD_PRODUCTION_OUV == 1 )); then
+  MODE_APPROUVER="relancer"
+  CIBLE="READY"
+fi
 # (2026-09-25, ADR 0003 R3, O40) Preuve a fournir (P16) : la tache est publiee,
 # mise en pause par l'escalade de sa decision. « approuver "vert : ..." » solde
 # les preuves avec ce compte rendu et la ramene PUBLISHED, SANS republier ;
@@ -241,6 +249,12 @@ fi
 
 # --- ADR 0002 : violation (P13) et demande d'ecriture (P12) --------------------
 # Le harnais connait exactement les fichiers fautifs : il separe sans modele.
+# (2026-10-29, defaut 137, O89) Une demande d'ecriture qui ne s'ecrit pas arrete « nettoyer »
+# AVANT tout changement de branche : sinon le fichier fautif serait retire sans demande a
+# trancher (un echec dans une liste && ne declenche pas set -e). Tests NG2, NG3.
+refuser_le_nettoyage() {  # refuser_le_nettoyage <ce qui ne s'ecrit pas>
+  die "nettoyer refuse : impossible d ecrire $1 (jq en echec, voir ci-dessus) — rien n est retire de la branche, escalade maintenue"
+}
 # retirer_fautifs <avec_demandes 0|1> — branche propre = diff de l'agent MOINS
 # les fichiers fautifs (remis a leur etat de base) ; la branche fautive reste en
 # quarantaine (posee par pipeline.sh). Avec demandes : chaque partie retiree
@@ -274,14 +288,31 @@ retirer_fautifs() {
       d="$(git_du_worktree "$WT_T" diff "$base" HEAD -- "$f")"
       j="$(jq -r --arg f "$f" '[(.demandes_ecriture // [])[] | select(.fichier == $f) | .justification] | first // empty' \
         "$STATE_DIR/$TASK_ID.compte-rendu.json" 2>/dev/null || true)"
-      jq --arg f "$f" --arg d "$d" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
+      # (2026-10-23, defaut 133) Le diff passe a jq par un fichier (--rawfile), jamais en
+      # argument : au-dela de 128 Ko (MAX_ARG_STRLEN), jq ne demarrait pas (« Argument list too
+      # long ») et la demande de ce fichier etait perdue sans le dire (vu sur T-010, rapport
+      # vitest de 1 164 tests). printf est une commande interne : aucune limite d'argument. Le
+      # contenu est celui de l'ancien argument (pas de saut de ligne ajoute). Test NG1.
+      # AVANT :       jq --arg f "$f" --arg d "$d" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
+      local fichier_du_diff
+      fichier_du_diff="$(mktemp)"
+      printf '%s' "$d" >"$fichier_du_diff"
+      # (2026-10-29, defaut 137, O89) Une demande qui ne s'ecrit pas arrete nettoyer (refuser_le_nettoyage) :
+      # AVANT :         "$tmp" >"$tmp.n" && mv "$tmp.n" "$tmp"
+      jq --arg f "$f" --rawfile d "$fichier_du_diff" --arg j "${j:-aucune : ecrit sans demande, retire par nettoyage}" \
         '. + [{fichier:$f, besoin:"retire par nettoyage (P13)", justification:$j, diff:$d, origine:"nettoyage"}]' \
-        "$tmp" >"$tmp.n" && mv "$tmp.n" "$tmp"
+        "$tmp" >"$tmp.n" || refuser_le_nettoyage "la demande d ecriture de $f"
+      mv "$tmp.n" "$tmp"
+      rm -f "$fichier_du_diff"
     done
     # Demandes deja deposees par l'agent pour d'autres fichiers : conservees.
     if [[ -s "$STATE_DIR/$TASK_ID.demandes.json" ]]; then
+      # (2026-10-29, defaut 137, O89) Une fusion qui ne s'ecrit pas arrete nettoyer (refuser_le_nettoyage) :
+      # AVANT :         "$tmp" "$STATE_DIR/$TASK_ID.demandes.json" >"$tmp.n" && mv "$tmp.n" "$tmp"
       jq -s '(.[0] | map(.fichier)) as $n | (.[1] | map(select(.fichier as $x | $n | index($x) | not))) + .[0]' \
-        "$tmp" "$STATE_DIR/$TASK_ID.demandes.json" >"$tmp.n" && mv "$tmp.n" "$tmp"
+        "$tmp" "$STATE_DIR/$TASK_ID.demandes.json" >"$tmp.n" \
+        || refuser_le_nettoyage "les demandes d ecriture deja deposees par l agent"
+      mv "$tmp.n" "$tmp"
     fi
     mv "$tmp" "$STATE_DIR/$TASK_ID.demandes.json"
     rm -f "$STATE_DIR/$TASK_ID.demandes.decision"
@@ -501,6 +532,15 @@ if [[ "$DECISION_H" == modifier ]] && (( CONCEPTION_OUV == 1 )); then
   mkdir -p "$STATE_DIR"
   empreinte_tache "$TASK_ID" >"$STATE_DIR/$TASK_ID.conception-outre"
   log "$TASK_ID : conception en doute — l'humain passe outre (consigne transmise a l'agent)"
+fi
+
+# (2026-10-23, defaut 135) « modifier » sur une integration en retard (P20) : l'humain passe
+# outre pour CETTE tache ; la marque est lue par la garde de pipeline.sh, qui laisse alors
+# partir l'agent malgre l'ecart. Elle garde le message de l'humain, pour la trace. Test DP3.
+if [[ "$DECISION_H" == modifier ]] && (( RETARD_PRODUCTION_OUV == 1 )); then
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "${MESSAGE:-passe outre sans message}" >"$STATE_DIR/$TASK_ID.retard-production-outre"
+  log "$TASK_ID : integration en retard sur la production — l'humain passe outre pour cette tache"
 fi
 
 # (2026-09-25, ADR 0003 R3) Preuve soldee ou rouge : trace dans preuves.json ; la

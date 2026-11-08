@@ -367,6 +367,7 @@ Expiration : $(heure_humaine "$expiration")
   [[ "$raisons" == *"P14:arret-conception"* ]] && libelle_detail="Conception mise en cause par l agent (amender le ticket puis approuver, ou modifier \"ta decision\")"   # (2026-09-25, ADR 0003 R2)
   [[ "$raisons" == *"P16:"* ]] && libelle_detail="Preuve a fournir (jouer puis : approuver \"vert : ...\" ou refuser \"sortie rouge\")"   # (2026-09-25, ADR 0003 R3)
   [[ "$raisons" == *"P15:"* ]] && libelle_detail="Conception en doute (amender le ticket puis approuver, ou modifier \"consigne\" pour passer outre)"   # (2026-09-25, ADR 0003 R1)
+  [[ "$raisons" == *"P10:conception-panne"* ]] && libelle_detail="Relecteur de conception en panne"   # (2026-10-26, O87) aucun agent n'a tourne, ce n'est pas sa conclusion
   if [[ -n "$detail" ]]; then
     message="$message
 $libelle_detail : $detail"
