@@ -248,6 +248,106 @@ print(json.dumps({
 PY
 )"
 
+# (2026-11-07) Etat de chaque projet orchestre : version de la copie du socle (racine et
+# integration) et ecart entre integration et la branche de production declaree. Aucun
+# fetch : la page ne touche pas au reseau, elle lit la derniere reference connue d'origin.
+# L'utilisateur confondait la version du socle et celle de sa copie, et ne voyait pas les
+# 264 commits de retard d'integration sur main (iziGSM, 07/11). Test V9.
+
+# version_de_la_copie < .version-socle : {"commit", "version"}, ou null si aucun commit n'y
+# est inscrit. Le contenu arrive par l'entree standard : lu sur integration, il vient d'une
+# branche que l'agent peut modifier, et un tel contenu ne passe jamais en argument (v1.113).
+# Pour la meme raison, une valeur qui n'a pas la forme d'un hash n'est jamais donnee a git
+# (« --output=… » y serait une option) : elle rend « illisible ». Le numero de version est lu
+# dans le chapitre 0 du socle a ce commit ; un commit inconnu du socle rend « inconnue ».
+version_de_la_copie() {
+  local commit version
+  commit="$(sed -n 's/^commit=//p' | head -1)"
+  if [[ -z "$commit" ]]; then
+    printf 'null'
+    return 0
+  fi
+  if [[ ! "$commit" =~ ^[0-9a-f]{7,40}$ ]]; then
+    printf '{"commit": "", "version": "illisible"}'
+    return 0
+  fi
+  version="$(git -C "$ROOT" show "$commit:$PRES" 2>/dev/null | derniere_version || true)"
+  if [[ -z "$version" ]]; then
+    version="inconnue"
+  fi
+  jq -cn --arg commit "${commit:0:7}" --arg version "$version" '{commit: $commit, version: $version}'
+}
+
+# branche_production_declaree <dossier du projet> : ecrit le nom declare dans
+# « branche_production » (gates.json de la racine, comme la garde P20 de lib.sh), rien s'il
+# n'est pas declare ; rend 1 si gates.json existe mais ne se lit pas comme du JSON.
+branche_production_declaree() {
+  local gates="$1/orchestrator/gates.json"
+  if [[ ! -f "$gates" ]]; then
+    return 0
+  fi
+  if ! jq -e . "$gates" >/dev/null 2>&1; then
+    return 1
+  fi
+  jq -r '.branche_production.nom // empty' "$gates"
+}
+
+# ecart_avec_la_production <dossier du projet> : null si le projet ne declare pas de
+# branche de production, {"illisible": true} si son gates.json ne se lit pas (jamais
+# « non declaree » a tort) ; sinon le nom, la reference comparee (origin/<nom> si le projet
+# a un remote), les commits de retard et d'avance d'integration, et leur base commune.
+ecart_avec_la_production() {
+  local projet="$1" nom reference retard avance base_commune
+  if ! nom="$(branche_production_declaree "$projet")"; then
+    printf '{"illisible": true}'
+    return 0
+  fi
+  if [[ -z "$nom" ]]; then
+    printf 'null'
+    return 0
+  fi
+  reference="$nom"
+  if git -C "$projet" remote get-url origin >/dev/null 2>&1; then
+    reference="origin/$nom"
+  fi
+  local production_existe=1 integration_existe=1
+  git -C "$projet" rev-parse -q --verify "$reference^{commit}" >/dev/null || production_existe=0
+  git -C "$projet" rev-parse -q --verify "$INTEGRATION_BRANCH^{commit}" >/dev/null || integration_existe=0
+  if (( production_existe == 0 || integration_existe == 0 )); then
+    jq -cn --arg nom "$nom" --arg reference "$reference" '{nom: $nom, reference: $reference, introuvable: true}'
+    return 0
+  fi
+  retard="$(git -C "$projet" rev-list --count "$INTEGRATION_BRANCH..$reference")"
+  avance="$(git -C "$projet" rev-list --count "$reference..$INTEGRATION_BRANCH")"
+  base_commune="$(git -C "$projet" merge-base "$reference" "$INTEGRATION_BRANCH" 2>/dev/null | cut -c1-7 || true)"
+  jq -cn --arg nom "$nom" --arg reference "$reference" --argjson retard "$retard" \
+    --argjson avance "$avance" --arg base_commune "$base_commune" \
+    '{nom: $nom, reference: $reference, retard: $retard, avance: $avance, base_commune: $base_commune}'
+}
+
+printf '[]' >"$TMP/etat-projets.json"
+if (( ${#PROJETS[@]} > 0 )); then
+  for P in "${PROJETS[@]}"; do
+    projet_absolu="$(cd "$P" && pwd)"
+    copie_racine="null"
+    if [[ -f "$projet_absolu/orchestrator/.version-socle" ]]; then
+      copie_racine="$(version_de_la_copie <"$projet_absolu/orchestrator/.version-socle")"
+    fi
+    # Sans copie du socle sur integration, git show echoue : entree vide, donc null.
+    copie_integration="$({ git -C "$projet_absolu" show "$INTEGRATION_BRANCH:orchestrator/.version-socle" 2>/dev/null || true; } | version_de_la_copie)"
+    production="$(ecart_avec_la_production "$projet_absolu")"
+    jq -cn --arg projet "$(basename "$projet_absolu")" --argjson socle_racine "$copie_racine" \
+      --argjson socle_integration "$copie_integration" --argjson production "$production" \
+      '{projet: $projet, socle_racine: $socle_racine, socle_integration: $socle_integration, production: $production}' \
+      >>"$TMP/etat-projets.jsonl"
+  done
+  jq -s '.' "$TMP/etat-projets.jsonl" >"$TMP/etat-projets.json"
+fi
+# Le JSON de Python n'est pas reecrit (d'autres tests y cherchent sa mise en forme) : la
+# cle s'ajoute avant son accolade fermante.
+DONNEES="${DONNEES%\}}, \"etat_projets\": $(jq -c '.' "$TMP/etat-projets.json")}"
+jq -e . <<<"$DONNEES" >/dev/null || die "donnees de la page illisibles apres l'ajout de l'etat des projets"
+
 if [[ "$FORMAT" == json ]]; then
   printf '%s\n' "$DONNEES"
   exit 0

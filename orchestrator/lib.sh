@@ -278,6 +278,41 @@ installation_incomplete() {
   printf 'installation-incomplete\n'
 }
 
+# integration_en_retard_sur_production — (2026-10-23, defaut 135) si gates.json declare
+# « branche_production » ({"nom": "main", "retard_max": 0}) : rend
+# « integration-en-retard(N) » quand la branche de production a plus de retard_max commits
+# absents de l'integration (N = ce nombre), « branche-production-introuvable(nom) » si elle
+# n'existe pas, rien si tout va bien ou si le controle n'est pas declare. Pourquoi : le socle
+# travaille sur l'integration et livre vers la production par report ; rien ne ramenait la
+# production vers l'integration (iziGSM, 23/10 : 214 commits de retard, un ticket serait parti
+# sur du code perime). Production lue sur origin si le projet a un remote (fetch sous le
+# verrou du depot, comme run-task.sh), sinon en local. retard_max vaut 0 par defaut
+# (decision de l'utilisateur du 23/10). Tests DP1 a DP3.
+integration_en_retard_sur_production() {
+  local g="$ROOT/orchestrator/gates.json" nom retard_max reference retard
+  [[ -f "$g" ]] || return 0
+  nom="$(jq -r '.branche_production.nom // empty' "$g" 2>/dev/null)"
+  [[ -n "$nom" ]] || return 0
+  retard_max="$(jq -r '.branche_production.retard_max // 0' "$g")"
+  reference="$nom"
+  # Avec un remote, on mesure toujours contre origin/<nom> : le fetch ne fait que la
+  # rafraichir. S'il echoue (reseau coupe, jeton expire), la derniere reference connue
+  # d'origin reste plus juste que la branche locale, souvent ancienne ou absente.
+  if git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+    sous_verrou_depot git -C "$ROOT" fetch -q origin "$nom" 2>/dev/null || true
+    reference="origin/$nom"
+  fi
+  if ! git -C "$ROOT" rev-parse -q --verify "$reference^{commit}" >/dev/null; then
+    printf 'branche-production-introuvable(%s)\n' "$nom"
+    return 0
+  fi
+  retard="$(git -C "$ROOT" rev-list --count "$INTEGRATION_BRANCH..$reference")"
+  if (( retard > retard_max )); then
+    printf 'integration-en-retard(%s)\n' "$retard"
+  fi
+  return 0
+}
+
 # coutures_manquantes <T-NNN> — (2026-09-29, ADR 0004 D3) si "coutures": true dans
 # gates.json : rend « ticket-absent » ou « section-absente », rien si tout va bien
 # ou si le controle n'est pas active (decision de l'operateur : active par projet).

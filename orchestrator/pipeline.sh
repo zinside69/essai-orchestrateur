@@ -101,6 +101,29 @@ if plafond_jour_atteint; then
   exit 20
 fi
 
+# 0-ter. Integration en retard sur la branche de production (2026-10-23, defaut 135) — si
+# le projet la declare (« branche_production » dans gates.json). Au-dela de retard_max
+# commits de retard, aucun appel payant : un agent travaillerait sur du code perime et le
+# report de son travail vers la production entrerait en conflit. Escalade P20 (L3) qui dit
+# l'ecart et le geste. Tests DP1 a DP3.
+MOTIF_RETARD="$(integration_en_retard_sur_production)"
+# L'humain a passe outre pour cette tache (« repondre.sh modifier » sur P20) : l'ecart est
+# connu et accepte, l'agent part ; le journal le dit. Test DP3.
+if [[ -n "$MOTIF_RETARD" && -f "$STATE_DIR/$TASK_ID.retard-production-outre" ]]; then
+  log "$TASK_ID : integration en retard sur la production ($MOTIF_RETARD) — l'humain a passe outre pour cette tache"
+  MOTIF_RETARD=""
+fi
+if [[ -n "$MOTIF_RETARD" ]]; then
+  transition PARKED
+  ESC_RETARD="$STATE_DIR/$TASK_ID.escalade-retard-production.json"
+  jq -nc --arg m "$MOTIF_RETARD" --arg i "$INTEGRATION_BRANCH" \
+    '{raisons: ["P20:" + $m],
+      detail: ("La branche d integration (" + $i + ") est en retard sur la branche de production du projet (" + $m + ", en commits) : un agent y travaillerait sur du code perime, et le report de son travail entrerait en conflit. Geste : resynchroniser l integration sur la branche de production (fusion, en gardant les livraisons pas encore reportees), puis repondre approuver (relance).")}' >"$ESC_RETARD"
+  "$D/escalade.sh" "$TASK_ID" "$ESC_RETARD" || true
+  log "$TASK_ID : integration en retard sur la production ($MOTIF_RETARD) — agent non lance (P20)"
+  exit 20
+fi
+
 # 0-. Installation (2026-09-29, ADR 0004 D4) — si le projet l'a activee
 # ("installation": true dans gates.json). Sans docs/agents/issue-tracker.md,
 # l'agent ne part pas : escalade P18 (L3), aucun appel payant, avant le controle
@@ -144,6 +167,30 @@ set +e
 "$D/conception.sh" "$TASK_ID" >>"$LOG_DIR/pipeline-$TASK_ID.log" 2>&1
 rcc=$?
 set -e
+# (2026-10-26, O87) Relecteur de conception en panne (code 21 de conception.sh : Claude Code
+# a rendu une erreur, rien n'a ete relu). Ce n'est pas un doute sur le ticket : escalade P10,
+# qui dit le geste ; « approuver » relance, et la relecture repasse. Test CO11.
+RELECTEUR_EN_PANNE=21
+if (( rcc == RELECTEUR_EN_PANNE )); then
+  transition PARKED
+  ESC_CO="$STATE_DIR/$TASK_ID.escalade-conception.json"
+  # Le geste depend de la cause, nommee par conception.sh : se reconnecter seulement pour une
+  # panne d'authentification ; sinon (API surchargee, coupure) attendre puis relancer. Test CO12.
+  GESTE_PANNE="attendre que le service reponde de nouveau, puis repondre approuver (la relecture repasse)."
+  if jq -e '.cause == "authentification"' "$STATE_DIR/$TASK_ID.conception.json" >/dev/null 2>&1; then
+    GESTE_PANNE="reconnecter Claude Code sous WSL (wsl -d Ubuntu, puis claude, puis /login), puis repondre approuver (la relecture repasse)."
+  fi
+  jq -c --arg geste "$GESTE_PANNE" '{raisons: ["P10:conception-panne"],
+          detail: ("Le relecteur de conception est en panne : il n a rien relu, le ticket n est pas en cause. Message de Claude Code : " + (.message // "") + "\nGeste : " + $geste)}' \
+    "$STATE_DIR/$TASK_ID.conception.json" >"$ESC_CO" \
+    || jq -nc --arg geste "$GESTE_PANNE" '{raisons: ["P10:conception-panne"],
+          detail: ("Le relecteur de conception est en panne (son compte rendu est illisible) : il n a rien relu, le ticket n est pas en cause.\nGeste : " + $geste)}' >"$ESC_CO"
+  # Repli ci-dessus (seconde revue du 26/10) : sans lui, un echec de jq arretait le script
+  # apres « transition PARKED » et avant l'escalade : tache en pause, personne prevenu.
+  "$D/escalade.sh" "$TASK_ID" "$ESC_CO" || true
+  log "$TASK_ID : relecteur de conception en panne — agent non lance (P10)"
+  exit 20
+fi
 if (( rcc != 0 )); then
   transition PARKED
   ESC_CO="$STATE_DIR/$TASK_ID.escalade-conception.json"
