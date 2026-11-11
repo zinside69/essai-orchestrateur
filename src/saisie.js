@@ -1,6 +1,8 @@
 // Voir aussi src/texte.js
 // Le résultat est toujours en centimes entiers, jamais en flottant.
 
+import { formaterEuros } from './prix.js';
+
 // Signe optionnel, partie entière (avec ou sans espaces entre milliers),
 // puis au plus deux chiffres après la virgule.
 const MONTANT = /^(-?)(\d+|\d{1,3}(?: \d{3})+)(?:,(\d{1,2}))?$/;
@@ -33,4 +35,15 @@ export function estMontantValide(texte) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Convertit un montant saisi en euros lisibles, ex. "12,34" devient "12,34 €".
+ * @param {string} texte montant saisi, ex. "12,34", "1 234,5" ou "-2,5"
+ * @returns {string} montant formate en euros
+ * @throws {TypeError} si texte n'est pas une chaîne représentant un montant
+ */
+export function montantSaisiEnEuros(texte) {
+  const centimes = centimesDepuisTexte(texte);
+  return formaterEuros(centimes);
 }
