@@ -1,7 +1,7 @@
 // Tests de src/saisie.js — lancés par `npm run test` (node --test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { centimesDepuisTexte, estMontantValide } from '../src/saisie.js';
+import { centimesDepuisTexte, estMontantValide, montantSaisiEnEuros } from '../src/saisie.js';
 
 test('centimesDepuisTexte convertit un montant avec virgule décimale', () => {
   assert.equal(centimesDepuisTexte('12,34'), 1234);
@@ -50,4 +50,20 @@ test('estMontantValide renvoie false pour une chaîne vide', () => {
 
 test('estMontantValide renvoie false pour une valeur qui n\'est pas une chaîne', () => {
   assert.equal(estMontantValide(12.34), false);
+});
+
+test('montantSaisiEnEuros formate un montant avec virgule décimale', () => {
+  assert.equal(montantSaisiEnEuros('12,34'), '12,34 €');
+});
+
+test('montantSaisiEnEuros complète un seul chiffre décimal avec un zéro', () => {
+  assert.equal(montantSaisiEnEuros('1 234,5'), '1 234,50 €');
+});
+
+test('montantSaisiEnEuros formate un montant négatif', () => {
+  assert.equal(montantSaisiEnEuros('-2,5'), '-2,50 €');
+});
+
+test('montantSaisiEnEuros refuse un texte qui n\'est pas un montant', () => {
+  assert.throws(() => montantSaisiEnEuros('abc'), { name: 'TypeError', message: /montant/ });
 });
