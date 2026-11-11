@@ -20,3 +20,17 @@ export function centimesDepuisTexte(texte) {
   const centimes = Number(euros.replaceAll(' ', '')) * 100 + Number(decimales.padEnd(2, '0'));
   return signe ? -centimes : centimes;
 }
+
+/**
+ * Indique si un texte saisi représente un montant valide, sans jamais lever d'exception.
+ * @param {string} texte montant saisi à valider
+ * @returns {boolean} true si centimesDepuisTexte(texte) réussit, false sinon
+ */
+export function estMontantValide(texte) {
+  try {
+    centimesDepuisTexte(texte);
+    return true;
+  } catch {
+    return false;
+  }
+}
