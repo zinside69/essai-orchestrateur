@@ -1,3 +1,4 @@
+// Voir aussi src/texte.js (minuscules)
 // prix.js — calculs de prix en centimes entiers.
 // Un montant d'argent n'est jamais un flottant : 0,1 + 0,2 ≠ 0,3.
 
