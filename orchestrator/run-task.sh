@@ -231,16 +231,46 @@ for GATE_N in "${GATES_TACHE[@]}"; do
   commande_pour_l_agent="${commande_pour_l_agent//'$ROOT'/$ROOT}"
   COMMANDES_GATES+="  - $GATE_N : ${commande_pour_l_agent:-commande non déclarée dans gates.json}"$'\n'
 done
+# (2026-11-09, O92) Les commandes de gates.json sont celles du HARNAIS : composees ($( ),
+# case, jq...) et parfois dependantes de $ROOT, elles sont refusees a l'agent, dont les
+# autorisations ne couvrent que des commandes simples. La consigne le dit, et donne la liste
+# de ce que l'agent peut lancer, lue dans $ROOT/.claude/settings.json (source de confiance,
+# comme gates.json). Les commandes git en sont exclues : elles ont leur regle (ADR 0004). Test DC5.
+commandes_permises_a_l_agent() {  # une ligne : « npm run test, npx vitest » ; vide sans reglages
+  local reglages="$ROOT/.claude/settings.json"
+  [[ -f "$reglages" ]] || return 0
+  # Chaque regle « Bash(npm run test:*) » devient « npm run test » ; les regles git sont ecartees.
+  jq -r '.permissions.allow[]?
+         | select(startswith("Bash("))
+         | ltrimstr("Bash(") | rtrimstr(")")
+         | sub(":\\*$"; "") | sub(" \\*$"; "")
+         | select(startswith("git ") | not)' "$reglages" 2>/dev/null \
+    | paste -sd ',' - | sed 's/,/, /g' || true
+}
+COMMANDES_PERMISES="$(commandes_permises_a_l_agent)"
+[[ -n "$COMMANDES_PERMISES" ]] || COMMANDES_PERMISES="aucune commande déclarée dans les autorisations du projet"
 # (2026-10-03, ADR 0004 D2.3) Derniere puce : la regle de lisibilite de l'utilisateur.
 # Elle vit dans son CLAUDE.md global sous Windows, que les agents ne lisent pas : ils
 # tournent sous WSL (/home/said) ou sur une autre machine. La consigne la porte donc
 # elle-meme, quelle que soit la machine. Test DC1.
+# AVANT (2026-11-09, O92 : promettait des commandes que les autorisations de l'agent refusent) :
+#   - Les contrôles que le harnais jouera après toi, commandes exactes :
+#   ${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conclure.
+# (2026-11-09, O92 tranche 2) Ligne ajoutée : un contrôle rouge revient à l'agent avec
+# la fin de sa sortie (pipeline.sh, cas 10). Test RC1.
+# (2026-11-11, O93 variante a) Puce « Portabilite » ajoutee apres la lisibilite. Sur
+# T-014, l'agent a appele node_modules/.bin/tailwindcss : vert sous Linux (controles),
+# casse sous Windows (seul le .cmd y existe), ou l'exploitant construit aussi. Le harnais
+# ne joue ses controles que sous Linux : la consigne previent. Test DC6.
 cat >>"$WT/.claude-task.md" <<EOF
 
 ## Méthode (ADR 0004)
 - Une tranche verticale à la fois : un comportement de bout en bout, testé, avant le suivant.
-- Les contrôles que le harnais jouera après toi, commandes exactes :
-${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conclure.
+- Les contrôles que le harnais jouera après toi, hors de ta session (pour information : ce
+  sont des commandes du harnais, tu ne peux pas les lancer telles quelles) :
+${COMMANDES_GATES}  Pour vérifier ton travail, lance les commandes que tes autorisations permettent : ${COMMANDES_PERMISES}.
+  Lance le typecheck souvent, la suite complète avant de conclure.
+  Un contrôle rouge du harnais te sera renvoyé avec la fin de sa sortie : corrige alors la cause dans ton périmètre.
 - Tests aux coutures du ticket, par l'interface publique : jamais tautologiques (un test
   qui ne peut pas échouer), jamais liés à l'implémentation (détails internes simulés).
 - Architecture : respecte l'architecture et les conventions écrites dans le
@@ -252,6 +282,11 @@ ${COMMANDES_GATES}  Lance le typecheck souvent, la suite complète avant de conc
   des noms qui disent ce qu'ils portent, une condition nommée plutôt qu'une double négation,
   une boucle simple plutôt qu'une regex à lookahead, une fonction courte par idée, des alias
   SQL parlants avec un commentaire par condition.
+- Portabilité : le projet peut aussi se construire sous un autre système que celui des
+  contrôles (Windows). Dans les scripts et commandes du projet, jamais de chemin en dur vers
+  un exécutable installé par le gestionnaire de paquets (par exemple node_modules/.bin/…,
+  absent sous Windows où seul le .cmd existe) : passe par le lanceur (npx <outil>, un script
+  npm run) ou par node <paquet>/<fichier>.
 - Commandes : lance chaque commande au premier plan et attends sa fin avant de passer à la
   suite ; l'arrière-plan t'est fermé. Une commande laissée en route rend ton travail
   inachevé et ton compte rendu absent.

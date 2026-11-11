@@ -180,6 +180,11 @@ if (( rcc == RELECTEUR_EN_PANNE )); then
   if jq -e '.cause == "authentification"' "$STATE_DIR/$TASK_ID.conception.json" >/dev/null 2>&1; then
     GESTE_PANNE="reconnecter Claude Code sous WSL (wsl -d Ubuntu, puis claude, puis /login), puis repondre approuver (la relecture repasse)."
   fi
+  # (2026-11-10, O95) claude introuvable dans le PATH : ni reconnexion ni attente n'y feraient
+  # rien. Test CO29.
+  if jq -e '.cause == "dependance"' "$STATE_DIR/$TASK_ID.conception.json" >/dev/null 2>&1; then
+    GESTE_PANNE="rendre claude accessible dans le PATH du shell qui lance le socle (bash -l sous WSL, ou le PATH du service), puis repondre approuver (la relecture repasse)."
+  fi
   jq -c --arg geste "$GESTE_PANNE" '{raisons: ["P10:conception-panne"],
           detail: ("Le relecteur de conception est en panne : il n a rien relu, le ticket n est pas en cause. Message de Claude Code : " + (.message // "") + "\nGeste : " + $geste)}' \
     "$STATE_DIR/$TASK_ID.conception.json" >"$ESC_CO" \
@@ -270,6 +275,28 @@ if (( rcg != 0 )); then
       #   pas), avec la conclusion de l'agent dans le texte de l'alerte. Test Y4.
       # AVANT :       transition RED ;;
       transition RED
+      # (2026-11-09, O92 tranche 2) Un rouge que l'agent peut corriger lui revient avec
+      # la sortie brute des controles, au plus revue.corrections_max fois (compteur
+      # partage avec le desaccord du relecteur, decision de l'exploitant) ; ensuite
+      # seulement, P11 ci-dessous. RED -> RUNNING est permis (matrice.json). Tests RC1 a RC3.
+      if controles_rouges_corrigeables "$GATE_V"; then
+        CORR_MAX="$(jq -r '.revue.corrections_max // 2' "$D/matrice.json" 2>/dev/null || echo 2)"
+        CORR_FAITES="$(sed -n 's/^corrections=//p' "$F" | head -1)"
+        CORR_FAITES="${CORR_FAITES:-0}"
+        if (( CORR_FAITES < CORR_MAX )); then
+          CORR_N=$(( CORR_FAITES + 1 ))
+          consigne_correction_controles "$GATE_V" "$LOG_DIR" "$TASK_ID" "$CORR_N" "$CORR_MAX" \
+            >"$STATE_DIR/$TASK_ID.corrections.md"
+          if grep -q '^corrections=' "$F"; then
+            sed -i "s/^corrections=.*/corrections=$CORR_N/" "$F"
+          else
+            printf 'corrections=%s\n' "$CORR_N" >>"$F"
+          fi
+          transition RUNNING
+          log "$TASK_ID : controles rouges — l'agent corrige avec leur sortie (correction $CORR_N/$CORR_MAX)"
+          exec "$D/pipeline.sh" "$TASK_ID"
+        fi
+      fi
       ESC_RED="$STATE_DIR/$TASK_ID.escalade-rouge.json"
       RAISONS_GATE="$(jq -r '(.raisons // []) | join(",")' "$GATE_V" 2>/dev/null || true)"
       DETAIL_AGENT="$(jq -Rr 'fromjson? | select(.type == "result") | .result // empty' \
