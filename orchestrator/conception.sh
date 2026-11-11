@@ -3,6 +3,7 @@
 # Usage : conception.sh T-NNN
 # Sortie : state/T-NNN.conception.json | code 0 = conforme (ou rien a relire), 20 = doute
 #          21 = relecteur en panne (2026-10-26, O87 : erreur de Claude Code, rien n'a ete relu)
+#               ou claude introuvable dans le PATH (2026-11-10, O95, cause « dependance »)
 #
 # (2026-09-25, O39) Ticket 18 iziGSM : le ticket prescrivait « echec du mouvement
 # => cle liberee », avec le test qui la validait ; le mouvement n'etant pas
@@ -39,7 +40,11 @@ mkdir -p "$STATE_DIR"
 if [[ ! -f "$G" ]] || ! jq -e '.conception == true' "$G" >/dev/null 2>&1; then
   exit 0
 fi
-require claude jq sha256sum
+# AVANT : require claude jq sha256sum
+#   (2026-11-10, O95) claude se verifie plus bas, apres le passe-outre et le conforme garde :
+#   sur T-016 (08/11), un shell sans claude sortait ici en erreur, lue en doute (P15), alors
+#   que l'humain avait deja passe outre. Tests CO29, CO30.
+require jq sha256sum
 
 EMPREINTE="$(empreinte_tache "$TASK_ID")"
 if [[ "$(cat "$OUTRE" 2>/dev/null || true)" == "$EMPREINTE" ]]; then
@@ -88,6 +93,15 @@ if jq -e --arg e "$EMPREINTE" '.verdict == "conforme" and .empreinte == $e' "$SO
    && ! conforme_sans_code_lu "$SORTIE"; then
   log "$TASK_ID : conception deja relue, conforme (meme declaration)"
   exit 0
+fi
+# --- claude introuvable : une panne, jamais un doute (2026-11-10, O95) ----------
+# Pourquoi : sans claude, rien n'est relu et le ticket n'est pas en cause. Meme code que les
+# autres pannes (21) ; la cause « dependance » donne a pipeline.sh le geste a dire. Test CO29.
+if ! command -v claude >/dev/null 2>&1; then
+  jq -nc --arg e "$EMPREINTE" --arg t "$TASK_ID" \
+    '{tache:$t, verdict:"panne", empreinte:$e, cause:"dependance", message:"dependance manquante : claude"}' >"$SORTIE"
+  log "$TASK_ID : relecteur de conception non lance — dependance manquante : claude"
+  exit 21
 fi
 
 declare -A TACHE=()

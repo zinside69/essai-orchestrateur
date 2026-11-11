@@ -144,6 +144,68 @@ SKILLS_INV="$(sed -n 's/^skills_invoques=//p' "$STATE_DIR/$TASK_ID.state" 2>/dev
 PROMPT="$PROMPT
 
 SKILLS INVOQUES PAR L AUTEUR : ${SKILLS_INV:-aucun} (relevé du harnais, pour information : ne fonde aucun rejet)"
+
+# --- Controles joues par le harnais (2026-11-11, O94) -----------------------
+# Pourquoi : sur T-014, le relecteur a juge « non prouves » des E2E que le controle
+# e2e venait de jouer au vert ; il ne voyait que le compte rendu de l'agent, qu'il
+# doit justement verifier. Les faits viennent du harnais seul : verdict.json ecrit
+# par gate.sh, commandes de gates.json lu dans ROOT (jamais la copie du worktree de
+# l'agent), statut de test-rouge.sh et des mutations. Aucun extrait de journal de
+# controle : son contenu est produit par le code de l'agent (leçon v1.105).
+# Tests RVC1 a RVC3.
+VERDICT_DES_CONTROLES="$STATE_DIR/$TASK_ID.verdict.json"
+GATES_DU_PROJET="$ROOT/orchestrator/gates.json"
+TEST_ROUGE_MESURE="$STATE_DIR/$TASK_ID.test-rouge.json"
+PREUVES_DE_LA_TACHE="$STATE_DIR/$TASK_ID.preuves.json"
+
+# Une ligne par controle joue : nom, code, vert ou rouge, duree, commande du projet.
+decrire_les_controles_joues() {
+  local source_des_commandes="$GATES_DU_PROJET"
+  if [[ ! -f "$source_des_commandes" ]]; then
+    source_des_commandes=/dev/null
+  fi
+  if [[ ! -s "$VERDICT_DES_CONTROLES" ]]; then
+    printf '%s\n' "aucun résultat de contrôle disponible (pas de verdict du harnais pour cette tâche)"
+    return 0
+  fi
+  jq -r --slurpfile projet "$source_des_commandes" '
+    ($projet[0].gates // {}) as $commandes
+    | "verdict global des contrôles : \(.verdict // "inconnu")",
+      (.preuve.gates // [] | .[]
+       | "- \(.nom) : code \(.rc) (\(if .rc == 0 then "vert" else "rouge" end)), \(.duration_ms) ms, commande « \($commandes[.nom] // "inconnue") »")
+  ' "$VERDICT_DES_CONTROLES" 2>/dev/null \
+    || printf '%s\n' "verdict du harnais illisible : aucun résultat de contrôle opposable"
+}
+
+# Mesure « test vu rouge » de test-rouge.sh, et mutations jouees par mutation.sh.
+decrire_les_preuves_mesurees() {
+  if [[ -s "$TEST_ROUGE_MESURE" ]]; then
+    jq -r '"test vu rouge (tests de l agent rejoués sans son code) : \(.statut // "inconnu"), contrôle « \(.controle // "?") »"' \
+      "$TEST_ROUGE_MESURE" 2>/dev/null || true
+  else
+    printf '%s\n' "test vu rouge : non mesuré"
+  fi
+  if [[ -s "$PREUVES_DE_LA_TACHE" ]]; then
+    jq -r '.[]? | select(.type == "mutation")
+           | "- mutation \(.id) : \(.resultat // "non jouée") (\(.statut // "?"))"' \
+      "$PREUVES_DE_LA_TACHE" 2>/dev/null || true
+  fi
+}
+
+# AVANT (2026-11-11, code-review du rattrapage O94 : preuves.json peut garder une mutation d'un
+# passage precedent, « a ce passage » etait trop fort pour test-rouge et les mutations) :
+#   CONTRÔLES JOUÉS PAR LE HARNAIS — faits mesurés hors de la session de l'agent, dans le sandbox,
+#   à ce passage. Un contrôle vert est un fait : ne le juge pas « non prouvé ». Tu restes juge de
+#   ce que les tests vérifient (pertinence, couverture des critères), pas de leur exécution.
+# Test RVC1.
+PROMPT="$PROMPT
+
+CONTRÔLES JOUÉS PAR LE HARNAIS — faits mesurés par le harnais, hors de la session de l'agent.
+Les contrôles ont été joués dans le sandbox à ce passage ; test-rouge et mutations donnent leur
+dernier état connu. Un contrôle vert est un fait : ne le juge pas « non prouvé ». Tu restes juge de
+ce que les tests vérifient (pertinence, couverture des critères), pas de leur exécution.
+$(decrire_les_controles_joues)
+$(decrire_les_preuves_mesurees)"
 if [[ -s "$STATE_DIR/$TASK_ID.demandes-appliquees" ]]; then
   PROMPT="$PROMPT
 

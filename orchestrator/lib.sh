@@ -544,6 +544,47 @@ consigne_correction() {
     "$1"
 }
 
+# ════ Controles rouges renvoyes a l'agent (2026-11-09, O92 tranche 2) ════
+# Option C de l'exploitant : « le harnais joue, l'agent recoit ». Un controle rouge
+# dont l'agent peut corriger la cause lui revient avec la fin brute de sa sortie,
+# dans la boucle de correction (meme compteur « corrections= », revue.corrections_max).
+
+# controles_rouges_corrigeables <gate-verdict.json> — vrai si TOUTES les raisons sont
+# des controles rouges « gate:<nom> ». Un controle declare sans commande
+# (gate:non-configure), un risque, un quota, une violation P13 ou un worktree sale vont
+# a l'humain : l'agent n'y peut rien, ou n'a pas le droit d'y toucher. Tests RC1, RC3.
+controles_rouges_corrigeables() {
+  jq -e '(.raisons // []) as $raisons
+         | ($raisons | length > 0)
+           and ($raisons | all(startswith("gate:") and (startswith("gate:non-configure:") | not)))' \
+    "$1" >/dev/null 2>&1
+}
+
+# consigne_correction_controles <gate-verdict.json> <dossier des journaux> <T-NNN> <n> <max>
+# — texte remis a l'agent : pour chaque controle rouge, la fin de sa sortie (la fin
+# d'une sortie de test porte le resume des echecs). Lu par run-task.sh. Test RC1.
+TAILLE_SORTIE_ROUGE_REMISE=4000
+consigne_correction_controles() {
+  local verdict="$1" journaux="$2" tache="$3" numero="$4" maximum="$5"
+  local raison nom sortie
+  printf 'Correction %s/%s : des controles du harnais sont rouges sur ton travail.\n' "$numero" "$maximum"
+  printf 'Voici la fin brute de leur sortie (%s derniers caracteres au plus).\n' "$TAILLE_SORTIE_ROUGE_REMISE"
+  while IFS= read -r raison; do
+    nom="${raison#gate:}"
+    sortie="$journaux/gate-$tache-$nom.log"
+    printf '\n### Controle « %s »\n' "$nom"
+    if [[ -f "$sortie" ]]; then
+      printf '```\n'
+      # Coupe au milieu d'un caractere possible : iconv -c retire le morceau (et rend 1).
+      tail -c "$TAILLE_SORTIE_ROUGE_REMISE" "$sortie" | iconv -c -f UTF-8 -t UTF-8 || true
+      printf '\n```\n'
+    else
+      printf '(sortie introuvable : %s)\n' "$sortie"
+    fi
+  done < <(jq -r '(.raisons // [])[]' "$verdict" 2>/dev/null)
+  printf '\nCorrige la cause dans ton perimetre, puis conclus. Si le rouge ne vient pas de ton travail, ne le contourne pas : explique-le dans ecarts de ton compte rendu.\n'
+}
+
 # ════ Plafond de depense par jour (2026-10-05, defaut 114, O65 partie 1) ════
 # Decision de l'operateur : plafond GLOBAL (tous les projets declares), 60 $ par
 # jour, jour de Paris. Reglage ORCH_PLAFOND_JOUR_USD dans ~/.orchestrateur.env
